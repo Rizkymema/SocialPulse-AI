@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
+import re
 from typing import Any, Dict
 
+import httpx
 import yt_dlp
 
 from app.config import settings
@@ -11,7 +14,7 @@ from app.scrapers.base import BaseScraper, ScraperError
 logger = logging.getLogger(__name__)
 
 # yt-dlp options – metadata only, no download
-_YDL_OPTS: Dict[str, Any] = {
+_BASE_YDL_OPTS: Dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
     "skip_download": True,
@@ -20,16 +23,39 @@ _YDL_OPTS: Dict[str, Any] = {
     "socket_timeout": 30,
     "format": "bestaudio/best",
     "ignore_no_formats_error": True,
-    # Enable comment extraction via YouTube InnerTube (no API key needed)
-    "getcomments": True,
-    "extractor_args": {
-        "youtube": {
-            "skip": ["hls", "dash", "translated_subs"],
-            # Keep inline scrapes bounded so Vercel requests can finish reliably.
-            "max_comments": ["100"],
-        }
-    },
 }
+
+_YOUTUBE_SKIP_EXTRACTORS = ["hls", "dash", "translated_subs"]
+_FALLBACK_PLAYER_CLIENTS = ("mweb", "web", "tv")
+_ENGAGEMENT_FIELDS = ("like_count", "comment_count", "view_count")
+_WATCH_PAGE_LIKE_COUNT_RE = re.compile(
+    r'"accessibilityText":"like this video along with ([0-9,]+) other people"',
+    re.IGNORECASE,
+)
+
+
+def _has_metric(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _build_ydl_opts(
+    *, include_comments: bool, player_client: str | None = None
+) -> Dict[str, Any]:
+    opts = deepcopy(_BASE_YDL_OPTS)
+    youtube_args: Dict[str, Any] = {
+        "skip": list(_YOUTUBE_SKIP_EXTRACTORS),
+    }
+
+    if include_comments:
+        opts["getcomments"] = True
+        # Keep inline scrapes bounded so Vercel requests can finish reliably.
+        youtube_args["max_comments"] = ["100"]
+
+    if player_client:
+        youtube_args["player_client"] = [player_client]
+
+    opts["extractor_args"] = {"youtube": youtube_args}
+    return opts
 
 
 class YouTubeScraper(BaseScraper):
@@ -102,39 +128,132 @@ class YouTubeScraper(BaseScraper):
         }
 
     # ── yt-dlp ────────────────────────────────────────────────────────────────
-    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
-        try:
-            with yt_dlp.YoutubeDL(_YDL_OPTS) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info is None:
-                    raise ScraperError("yt-dlp returned no info for URL")
-                # Strip large binary blobs from raw_data, keep comments
-                info.pop("formats", None)
-                info.pop("thumbnails", None)
-                info["_source"] = "yt_dlp"
-                # Normalize comments into a clean list
-                raw_comments = info.get("comments") or []
-                info["comments"] = [
-                    {
-                        "id": c.get("id"),
-                        "text": c.get("text", ""),
-                        "author": c.get("author"),
-                        "author_id": c.get("author_id"),
-                        "timestamp": c.get("timestamp"),
-                        "like_count": c.get("like_count", 0),
-                        "is_favorited": c.get("is_favorited", False),
-                        "author_is_uploader": c.get("author_is_uploader", False),
-                        "parent": c.get("parent", "root"),
-                    }
-                    for c in raw_comments
-                    if c.get("text")
-                ]
+    def _extract_with_ytdlp(
+        self, url: str, *, include_comments: bool, player_client: str | None = None
+    ) -> Dict[str, Any]:
+        opts = _build_ydl_opts(
+            include_comments=include_comments, player_client=player_client
+        )
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise ScraperError("yt-dlp returned no info for URL")
+            return info
+
+    def _backfill_missing_engagement(self, url: str, info: Dict[str, Any]) -> None:
+        missing_fields = [
+            field for field in _ENGAGEMENT_FIELDS if not _has_metric(info.get(field))
+        ]
+        if not missing_fields:
+            return
+
+        for player_client in _FALLBACK_PLAYER_CLIENTS:
+            try:
+                fallback = self._extract_with_ytdlp(
+                    url, include_comments=False, player_client=player_client
+                )
+            except Exception as exc:
+                logger.warning(
+                    "YouTube metadata retry failed with client %s for %s: %s",
+                    player_client,
+                    url,
+                    exc,
+                )
+                continue
+
+            restored_fields: list[str] = []
+            for field in missing_fields:
+                if _has_metric(info.get(field)):
+                    continue
+
+                fallback_value = fallback.get(field)
+                if _has_metric(fallback_value):
+                    info[field] = fallback_value
+                    restored_fields.append(field)
+
+            if restored_fields:
                 logger.info(
-                    "YouTube scrape complete: %d comments collected for %s",
-                    len(info["comments"]),
+                    "YouTube metadata retry restored %s with client %s for %s",
+                    ", ".join(restored_fields),
+                    player_client,
                     url,
                 )
-                return info
+
+            if all(_has_metric(info.get(field)) for field in missing_fields):
+                return
+
+        if "like_count" in missing_fields and not _has_metric(info.get("like_count")):
+            watch_page_like_count = self._fetch_watch_page_like_count(url)
+            if watch_page_like_count is not None:
+                info["like_count"] = watch_page_like_count
+                logger.info(
+                    "Recovered YouTube like_count from watch page for %s",
+                    url,
+                )
+
+    def _fetch_watch_page_like_count(self, url: str) -> int | None:
+        try:
+            response = httpx.get(
+                url,
+                params={"hl": "en", "gl": "US"},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/136.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                follow_redirects=True,
+                timeout=30,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Failed to fetch YouTube watch page for %s: %s", url, exc)
+            return None
+
+        match = _WATCH_PAGE_LIKE_COUNT_RE.search(response.text)
+        if not match:
+            return None
+
+        try:
+            return int(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+
+    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
+        try:
+            info = self._extract_with_ytdlp(url, include_comments=True)
+            self._backfill_missing_engagement(url, info)
+
+            # Strip large binary blobs from raw_data, keep comments
+            info.pop("formats", None)
+            info.pop("thumbnails", None)
+            info["_source"] = "yt_dlp"
+
+            # Normalize comments into a clean list
+            raw_comments = info.get("comments") or []
+            info["comments"] = [
+                {
+                    "id": c.get("id"),
+                    "text": c.get("text", ""),
+                    "author": c.get("author"),
+                    "author_id": c.get("author_id"),
+                    "timestamp": c.get("timestamp"),
+                    "like_count": c.get("like_count", 0),
+                    "is_favorited": c.get("is_favorited", False),
+                    "author_is_uploader": c.get("author_is_uploader", False),
+                    "parent": c.get("parent", "root"),
+                }
+                for c in raw_comments
+                if c.get("text")
+            ]
+            logger.info(
+                "YouTube scrape complete: %d comments collected for %s",
+                len(info["comments"]),
+                url,
+            )
+            return info
         except yt_dlp.utils.DownloadError as exc:
             raise ScraperError(f"yt-dlp download error: {exc}") from exc
         except Exception as exc:
