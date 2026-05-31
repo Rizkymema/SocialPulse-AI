@@ -18,6 +18,12 @@ import { Select } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSaaSStore } from "@/store/useSaaSStore";
 
+const PLAN_TIERS = [
+  { tier: "Free", desc: "Sandbox environment.", price: "$0" },
+  { tier: "Pro", desc: "Perfect for active agencies.", price: "$49" },
+  { tier: "Enterprise", desc: "Monitored scale integrations.", price: "$199" },
+] as const;
+
 export default function SettingsPage() {
   const { 
     user, 
@@ -181,11 +187,7 @@ export default function SettingsPage() {
                 
                 <CardContent className="space-y-4">
                   {/* Three tiers */}
-                  {([
-                    { tier: "Free", desc: "Sandbox environment.", price: "$0" },
-                    { tier: "Pro", desc: "Perfect for active agencies.", price: "$49" },
-                    { tier: "Enterprise", desc: "Monitored scale integrations.", price: "$199" },
-                  ] as const).map((p) => {
+                  {PLAN_TIERS.map((p) => {
                     const isCurrent = user?.plan === p.tier;
                     return (
                       <div 

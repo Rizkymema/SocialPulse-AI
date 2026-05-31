@@ -70,13 +70,13 @@ export default function OverviewPage() {
   // Use API data when available, fallback to local store
   const totalPosts = backendSummary ? backendSummary.total_posts : workspacePosts.length;
   const totalLikes = backendSummary
-    ? Object.values(backendSummary.platforms).reduce((s, p) => s + p.likes, 0)
+    ? Object.values(backendSummary.platforms ?? {}).reduce((s, p) => s + p.likes, 0)
     : workspacePosts.reduce((s, p) => s + p.likes, 0);
   const totalComments = backendSummary
-    ? Object.values(backendSummary.platforms).reduce((s, p) => s + p.comments, 0)
+    ? Object.values(backendSummary.platforms ?? {}).reduce((s, p) => s + p.comments, 0)
     : workspacePosts.reduce((s, p) => s + p.comments, 0);
   const totalShares = backendSummary
-    ? Object.values(backendSummary.platforms).reduce((s, p) => s + p.shares, 0)
+    ? Object.values(backendSummary.platforms ?? {}).reduce((s, p) => s + p.shares, 0)
     : workspacePosts.reduce((s, p) => s + p.shares, 0);
   const totalEngagement = totalLikes + totalComments + totalShares;
 
