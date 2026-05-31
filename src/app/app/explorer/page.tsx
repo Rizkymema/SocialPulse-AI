@@ -14,7 +14,6 @@ import {
   TableProperties,
   XCircle,
 } from "lucide-react";
-import type { ExportPost } from "@/lib/exportTypes";
 import {
   getPostComments,
   getPosts,
@@ -36,6 +35,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { exportToCSV, exportToExcel, exportToPDF } from "@/lib/exportEngine";
+import type { ExportComment, ExportDataset, ExportPost } from "@/lib/exportTypes";
+import {
+  detectPostSentiment,
+  detectSentiment,
+  getSentimentLabel,
+  summarizeSentiments,
+} from "@/lib/sentiment";
 import { useSaaSStore } from "@/store/useSaaSStore";
 
 type CommentsPostState = {
@@ -64,6 +70,7 @@ export default function DataExplorerPage() {
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentsError, setCommentsError] = useState("");
   const [sessionComments, setSessionComments] = useState<Record<string, Comment[]>>({});
+  const [exportingFormat, setExportingFormat] = useState<"csv" | "excel" | "pdf" | null>(null);
 
   useEffect(() => {
     getPosts({ size: 100 })
@@ -210,16 +217,19 @@ export default function DataExplorerPage() {
     setCommentsError("");
     setCommentsLoading(true);
 
-    const inlineComments = sessionComments[post.id] ?? extractInlineComments(post);
-    if (inlineComments.length > 0) {
-      setComments(inlineComments);
-      setCommentsLoading(false);
-      return;
-    }
-
     try {
+      const inlineComments = sessionComments[post.id] ?? extractInlineComments(post);
+      if (inlineComments.length > 0) {
+        setComments(inlineComments);
+        return;
+      }
+
       const res = await getPostComments(post.id);
       setComments(res.comments);
+      setSessionComments((current) => ({
+        ...current,
+        [post.id]: res.comments,
+      }));
     } catch {
       setCommentsError(
         "Komentar belum tersedia atau belum ikut tersimpan saat proses scraping."
@@ -259,52 +269,135 @@ export default function DataExplorerPage() {
     return b.likes - a.likes;
   });
 
-  const exportRows: ExportPost[] = sortedPosts.map((post) => ({
-    id: post.id,
-    platform: post.platform as ExportPost["platform"],
-    username: post.username ?? "unknown",
-    content: post.content ?? "",
-    likes: post.likes,
-    comments: post.comments,
-    shares: post.shares,
-    timestamp: post.posted_at ?? post.created_at,
-    sentiment: "neutral",
-  }));
-
-  const handleExportCSV = () => {
-    if (exportRows.length === 0) {
-      alert("Belum ada data scraping untuk diunduh.");
-      return;
+  const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<Comment[]> => {
+    const cachedComments = sessionComments[post.id] ?? extractInlineComments(post);
+    if (cachedComments.length > 0) {
+      if (!sessionComments[post.id]) {
+        setSessionComments((current) => ({
+          ...current,
+          [post.id]: cachedComments,
+        }));
+      }
+      return cachedComments;
     }
 
-    exportToCSV(exportRows, "hasil_scraping_socialpulse.csv");
-    addNotification(`Berhasil mengunduh ${exportRows.length} data ke CSV.`);
-  };
+    const res = await getPostComments(post.id);
+    setSessionComments((current) => ({
+      ...current,
+      [post.id]: res.comments,
+    }));
+    return res.comments;
+  }, [extractInlineComments, sessionComments]);
 
-  const handleExportExcel = () => {
-    if (exportRows.length === 0) {
-      alert("Belum ada data scraping untuk diunduh.");
-      return;
-    }
+  const buildExportDataset = useCallback(async (): Promise<ExportDataset> => {
+    const payloads = await Promise.all(
+      sortedPosts.map(async (post) => {
+        const loadedComments = await loadCommentsForExport(post);
+        if (post.comments > 0 && loadedComments.length < post.comments) {
+          throw new Error(
+            `Komentar untuk @${post.username ?? "unknown"} belum lengkap dimuat. Coba buka komentar post tersebut dulu lalu ulangi download.`
+          );
+        }
 
-    exportToExcel(exportRows, "Hasil Scraping", "hasil_scraping_socialpulse.xlsx");
-    addNotification(`Berhasil mengunduh ${exportRows.length} data ke Excel.`);
-  };
+        const exportComments: ExportComment[] = loadedComments.map((comment, index) => ({
+          id: comment.id ?? `${post.id}-comment-${index + 1}`,
+          postId: post.id,
+          postPlatform: post.platform as ExportPost["platform"],
+          postUrl: post.url,
+          postUsername: post.username ?? "unknown",
+          postTimestamp: post.posted_at ?? post.created_at,
+          author: comment.author ?? "Anonymous",
+          content: comment.text,
+          likes: comment.like_count,
+          timestamp:
+            typeof comment.timestamp === "number"
+              ? new Date(comment.timestamp * 1000).toISOString()
+              : post.posted_at ?? post.created_at,
+          parent: comment.parent,
+          sentiment: detectSentiment(comment.text),
+        }));
 
-  const handleExportPDF = () => {
-    if (exportRows.length === 0) {
-      alert("Belum ada data scraping untuk diunduh.");
-      return;
-    }
+        const commentSentiments = summarizeSentiments(
+          exportComments.map((comment) => comment.sentiment)
+        );
 
-    exportToPDF(
-      exportRows,
-      "Hasil Scraping",
-      `Export ${exportRows.length} data hasil scraping media sosial.`,
-      "hasil_scraping_socialpulse.pdf"
+        const exportPost: ExportPost = {
+          id: post.id,
+          platform: post.platform as ExportPost["platform"],
+          url: post.url,
+          username: post.username ?? "unknown",
+          content: post.content ?? "",
+          likes: post.likes,
+          comments: post.comments,
+          shares: post.shares,
+          views: post.views,
+          timestamp: post.posted_at ?? post.created_at,
+          sentiment: detectPostSentiment(
+            exportComments.map((comment) => comment.content),
+            post.content ?? ""
+          ),
+          commentSentiments,
+        };
+
+        return {
+          post: exportPost,
+          comments: exportComments,
+        };
+      })
     );
-    addNotification("Berhasil membuat file PDF hasil scraping.");
+
+    return {
+      posts: payloads.map((item) => item.post),
+      comments: payloads.flatMap((item) => item.comments),
+    };
+  }, [loadCommentsForExport, sortedPosts]);
+
+  const runExport = async (format: "csv" | "excel" | "pdf") => {
+    if (sortedPosts.length === 0) {
+      alert("Belum ada data scraping untuk diunduh.");
+      return;
+    }
+
+    setExportingFormat(format);
+    try {
+      const dataset = await buildExportDataset();
+      const summaryText = [
+        `Export ${dataset.posts.length} postingan dengan ${dataset.comments.length} komentar hasil scraping.`,
+        `Komentar positif: ${dataset.comments.filter((comment) => comment.sentiment === "positive").length}.`,
+        `Komentar netral: ${dataset.comments.filter((comment) => comment.sentiment === "neutral").length}.`,
+        `Komentar negatif: ${dataset.comments.filter((comment) => comment.sentiment === "negative").length}.`,
+      ].join(" ");
+
+      if (format === "csv") {
+        exportToCSV(dataset, "hasil_scraping_socialpulse.csv");
+      } else if (format === "excel") {
+        exportToExcel(dataset, "Hasil Scraping", "hasil_scraping_socialpulse.xlsx");
+      } else {
+        exportToPDF(
+          dataset,
+          "Hasil Scraping",
+          summaryText,
+          "hasil_scraping_socialpulse.pdf"
+        );
+      }
+
+      addNotification(
+        `Berhasil mengunduh ${dataset.posts.length} postingan dan ${dataset.comments.length} komentar ke ${format.toUpperCase()}.`
+      );
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Terjadi kesalahan saat menyiapkan file download."
+      );
+    } finally {
+      setExportingFormat(null);
+    }
   };
+
+  const activeCommentSentiments = summarizeSentiments(
+    comments.map((comment) => detectSentiment(comment.text))
+  );
 
   return (
     <div className="space-y-6">
@@ -335,22 +428,28 @@ export default function DataExplorerPage() {
             </Button>
             <div className="absolute right-0 top-10 hidden group-hover:block hover:block bg-[#09090b] border border-zinc-800 rounded-xl p-2 shadow-2xl z-40 w-44">
               <button
-                onClick={handleExportCSV}
+                onClick={() => void runExport("csv")}
+                disabled={exportingFormat !== null}
                 className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
               >
-                <FileDown className="h-4 w-4 text-zinc-500" /> Download CSV
+                <FileDown className="h-4 w-4 text-zinc-500" />
+                {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Download CSV"}
               </button>
               <button
-                onClick={handleExportExcel}
+                onClick={() => void runExport("excel")}
+                disabled={exportingFormat !== null}
                 className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
               >
-                <Files className="h-4 w-4 text-zinc-500" /> Download Excel
+                <Files className="h-4 w-4 text-zinc-500" />
+                {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Download Excel"}
               </button>
               <button
-                onClick={handleExportPDF}
+                onClick={() => void runExport("pdf")}
+                disabled={exportingFormat !== null}
                 className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
               >
-                <TableProperties className="h-4 w-4 text-zinc-500" /> Download PDF
+                <TableProperties className="h-4 w-4 text-zinc-500" />
+                {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Download PDF"}
               </button>
             </div>
           </div>
@@ -639,7 +738,7 @@ export default function DataExplorerPage() {
                 ? "Memuat komentar dari database..."
                 : commentsError
                 ? commentsError
-                : `${comments.length} komentar ditemukan`}
+                : `${comments.length} komentar ditemukan • Positif ${activeCommentSentiments.positive} • Netral ${activeCommentSentiments.neutral} • Negatif ${activeCommentSentiments.negative}`}
             </DialogDescription>
           </DialogHeader>
 
@@ -672,17 +771,42 @@ export default function DataExplorerPage() {
                       : "bg-zinc-950/60 border-zinc-800"
                   }`}
                 >
+                  {(() => {
+                    const sentiment = detectSentiment(comment.text);
+                    return (
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-semibold text-white">
+                            {comment.author ?? "Anonymous"}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              sentiment === "positive"
+                                ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                                : sentiment === "negative"
+                                ? "bg-red-500/10 text-red-300 border border-red-500/20"
+                                : "bg-zinc-800 text-zinc-300 border border-zinc-700"
+                            }`}
+                          >
+                            {getSentimentLabel(sentiment)}
+                          </span>
+                        </div>
+                        {comment.timestamp && (
+                          <span className="text-[10px] text-zinc-600 ml-auto">
+                            {new Date(comment.timestamp * 1000).toLocaleDateString("id-ID", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-semibold text-white">
-                      {comment.author ?? "Anonymous"}
-                    </span>
-                    {comment.timestamp && (
-                      <span className="text-[10px] text-zinc-600 ml-auto">
-                        {new Date(comment.timestamp * 1000).toLocaleDateString("id-ID", {
-                          year: "numeric",
-                          month: "short",
-                          day: "numeric",
-                        })}
+                    {typeof comment.like_count === "number" && comment.like_count > 0 && (
+                      <span className="text-[10px] text-zinc-500">
+                        {comment.like_count.toLocaleString()} likes komentar
                       </span>
                     )}
                   </div>

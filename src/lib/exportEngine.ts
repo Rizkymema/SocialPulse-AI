@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import type { ExportPost } from "./exportTypes";
+import type { ExportDataset } from "./exportTypes";
 
 // Add declaration for autoTable extension on jsPDF (v5 standalone API)
 
@@ -23,19 +23,75 @@ const escapeCSV = (val: unknown) => {
 /**
  * 1. CSV EXPORT
  */
-export const exportToCSV = (posts: ExportPost[], filename: string = "social_pulse_data.csv") => {
-  const headers = ["ID", "Platform", "Username", "Content", "Likes", "Comments", "Shares", "Timestamp", "Sentiment"];
-  const rows = posts.map((p) => [
-    p.id,
-    p.platform.toUpperCase(),
-    p.username,
-    p.content,
-    p.likes,
-    p.comments,
-    p.shares,
-    p.timestamp,
-    p.sentiment.toUpperCase(),
-  ]);
+export const exportToCSV = (
+  dataset: ExportDataset,
+  filename: string = "social_pulse_data.csv"
+) => {
+  const headers = [
+    "Post ID",
+    "Platform",
+    "Username",
+    "Post URL",
+    "Post Content",
+    "Post Likes",
+    "Post Comments",
+    "Post Shares",
+    "Post Views",
+    "Post Timestamp",
+    "Post Sentiment",
+    "Positive Comments",
+    "Neutral Comments",
+    "Negative Comments",
+    "Comment ID",
+    "Comment Author",
+    "Comment Text",
+    "Comment Likes",
+    "Comment Timestamp",
+    "Comment Parent",
+    "Comment Sentiment",
+  ];
+
+  const commentsByPost = dataset.comments.reduce((map, comment) => {
+    const comments = map.get(comment.postId) ?? [];
+    comments.push(comment);
+    map.set(comment.postId, comments);
+    return map;
+  }, new Map<string, typeof dataset.comments>());
+
+  const rows = dataset.posts.flatMap((post) => {
+    const comments = commentsByPost.get(post.id) ?? [];
+    const postColumns = [
+      post.id,
+      post.platform.toUpperCase(),
+      post.username,
+      post.url,
+      post.content,
+      post.likes,
+      post.comments,
+      post.shares,
+      post.views,
+      post.timestamp,
+      post.sentiment.toUpperCase(),
+      post.commentSentiments.positive,
+      post.commentSentiments.neutral,
+      post.commentSentiments.negative,
+    ];
+
+    if (comments.length === 0) {
+      return [[...postColumns, "", "", "", "", "", "", ""]];
+    }
+
+    return comments.map((comment) => [
+      ...postColumns,
+      comment.id,
+      comment.author,
+      comment.content,
+      comment.likes,
+      comment.timestamp,
+      comment.parent,
+      comment.sentiment.toUpperCase(),
+    ]);
+  });
 
   const csvContent = [
     headers.map(escapeCSV).join(","),
@@ -56,14 +112,22 @@ export const exportToCSV = (posts: ExportPost[], filename: string = "social_puls
 /**
  * 2. EXCEL EXPORT (Multi-sheet)
  */
-export const exportToExcel = (posts: ExportPost[], workspaceName: string, filename: string = "social_pulse_data.xlsx") => {
+export const exportToExcel = (
+  dataset: ExportDataset,
+  workspaceName: string,
+  filename: string = "social_pulse_data.xlsx"
+) => {
   const wb = XLSX.utils.book_new();
+  const posts = dataset.posts;
+  const comments = dataset.comments;
 
   // --- Sheet 1: Summary Stats ---
   const totalPosts = posts.length;
   const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
   const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
   const totalShares = posts.reduce((sum, p) => sum + p.shares, 0);
+  const totalViews = posts.reduce((sum, p) => sum + p.views, 0);
+  const exportedComments = comments.length;
   const totalEngagement = totalLikes + totalComments + totalShares;
 
   const platformCounts = posts.reduce((acc, p) => {
@@ -76,6 +140,11 @@ export const exportToExcel = (posts: ExportPost[], workspaceName: string, filena
     return acc;
   }, {} as Record<string, number>);
 
+  const commentSentimentCounts = comments.reduce((acc, comment) => {
+    acc[comment.sentiment] = (acc[comment.sentiment] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
   const summaryData = [
     ["Workspace Name", workspaceName],
     ["Export Date", new Date().toLocaleString()],
@@ -84,7 +153,9 @@ export const exportToExcel = (posts: ExportPost[], workspaceName: string, filena
     ["Total Collected Posts", totalPosts],
     ["Total Likes", totalLikes],
     ["Total Comments", totalComments],
+    ["Total Exported Comment Rows", exportedComments],
     ["Total Shares", totalShares],
+    ["Total Views", totalViews],
     ["Total Engagement Score", totalEngagement],
     [],
     ["PLATFORM DISTRIBUTION", "POST COUNT"],
@@ -109,6 +180,29 @@ export const exportToExcel = (posts: ExportPost[], workspaceName: string, filena
       sentimentCounts.negative || 0, 
       totalPosts ? `${Math.round(((sentimentCounts.negative || 0) / totalPosts) * 100)}%` : "0%"
     ],
+    [],
+    ["COMMENT SENTIMENT DISTRIBUTION", "COMMENT COUNT", "PERCENTAGE"],
+    [
+      "Positive",
+      commentSentimentCounts.positive || 0,
+      exportedComments
+        ? `${Math.round(((commentSentimentCounts.positive || 0) / exportedComments) * 100)}%`
+        : "0%",
+    ],
+    [
+      "Neutral",
+      commentSentimentCounts.neutral || 0,
+      exportedComments
+        ? `${Math.round(((commentSentimentCounts.neutral || 0) / exportedComments) * 100)}%`
+        : "0%",
+    ],
+    [
+      "Negative",
+      commentSentimentCounts.negative || 0,
+      exportedComments
+        ? `${Math.round(((commentSentimentCounts.negative || 0) / exportedComments) * 100)}%`
+        : "0%",
+    ],
   ];
 
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
@@ -119,17 +213,42 @@ export const exportToExcel = (posts: ExportPost[], workspaceName: string, filena
     ID: p.id,
     Platform: p.platform.toUpperCase(),
     Username: p.username,
+    URL: p.url,
     Content: p.content,
     Likes: p.likes,
     Comments: p.comments,
     Shares: p.shares,
+    Views: p.views,
     Engagement: p.likes + p.comments + p.shares,
     Timestamp: p.timestamp,
     Sentiment: p.sentiment.toUpperCase(),
+    PositiveComments: p.commentSentiments.positive,
+    NeutralComments: p.commentSentiments.neutral,
+    NegativeComments: p.commentSentiments.negative,
   }));
 
   const wsPosts = XLSX.utils.json_to_sheet(rawPostsData);
   XLSX.utils.book_append_sheet(wb, wsPosts, "Collected Posts");
+
+  const commentsData = comments.map((comment) => ({
+    CommentID: comment.id,
+    PostID: comment.postId,
+    Platform: comment.postPlatform.toUpperCase(),
+    Username: comment.postUsername,
+    PostURL: comment.postUrl,
+    PostTimestamp: comment.postTimestamp,
+    Author: comment.author,
+    Comment: comment.content,
+    CommentLikes: comment.likes,
+    CommentTimestamp: comment.timestamp,
+    Parent: comment.parent,
+    Sentiment: comment.sentiment.toUpperCase(),
+  }));
+
+  const wsComments = commentsData.length
+    ? XLSX.utils.json_to_sheet(commentsData)
+    : XLSX.utils.aoa_to_sheet([["No comments exported"]]);
+  XLSX.utils.book_append_sheet(wb, wsComments, "Collected Comments");
 
   // Write and Save
   XLSX.writeFile(wb, filename);
@@ -139,13 +258,15 @@ export const exportToExcel = (posts: ExportPost[], workspaceName: string, filena
  * 3. PDF REPORT EXPORT (AI-styled premium document)
  */
 export const exportToPDF = (
-  posts: ExportPost[],
+  dataset: ExportDataset,
   workspaceName: string,
   aiSummary: string,
   filename: string = "social_pulse_report.pdf"
 ) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
+  const posts = dataset.posts;
+  const comments = dataset.comments;
 
   // Branding Primary Color: Deep Indigo HSL(240, 5%, 6%) => Hex #1f1f23, Indigo accent #6366f1
   const colorPrimary: [number, number, number] = [99, 102, 241]; // [R, G, B]
@@ -191,13 +312,12 @@ export const exportToPDF = (
 
   // --- 3. Key Performance Indicators (Grid Cards) ---
   const totalPosts = posts.length;
-  const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
-  const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
-  const totalShares = posts.reduce((sum, p) => sum + p.shares, 0);
-  const totalEngagement = totalLikes + totalComments + totalShares;
+  const totalExportedComments = comments.length;
 
-  const posSentiment = posts.filter(p => p.sentiment === "positive").length;
-  const posPct = totalPosts ? Math.round((posSentiment / totalPosts) * 100) : 0;
+  const posSentiment = comments.filter((comment) => comment.sentiment === "positive").length;
+  const posPct = totalExportedComments
+    ? Math.round((posSentiment / totalExportedComments) * 100)
+    : 0;
 
   // Render KPI boxes
   const colW = (pageWidth - 40) / 3;
@@ -220,11 +340,11 @@ export const exportToPDF = (
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text("Total Engagement", 25 + colW, 75);
+  doc.text("Exported Comments", 25 + colW, 75);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
   doc.setTextColor(colorPrimary[0], colorPrimary[1], colorPrimary[2]);
-  doc.text(totalEngagement.toLocaleString(), 25 + colW, 86);
+  doc.text(totalExportedComments.toLocaleString(), 25 + colW, 86);
 
   // Card 3: Positive Mentions
   doc.setFillColor(244, 244, 245);
@@ -232,7 +352,7 @@ export const exportToPDF = (
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text("Positive Sentiment", 30 + colW * 2, 75);
+  doc.text("Positive Comments", 30 + colW * 2, 75);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
   doc.setTextColor(16, 185, 129); // Green
@@ -289,11 +409,56 @@ export const exportToPDF = (
     styles: { fontSize: 8 },
   });
 
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text("SocialPulse AI platform reports are automatically compiled and validated.", 15, 285);
-  doc.text("Page 1 of 1", pageWidth - 30, 285);
+  let commentsStartY = ((doc as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 154) + 14;
+  if (commentsStartY > 250) {
+    doc.addPage();
+    commentsStartY = 20;
+  }
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(colorDark[0], colorDark[1], colorDark[2]);
+  doc.text("Comments Appendix", 15, commentsStartY);
+
+  if (comments.length === 0) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+    doc.text("Tidak ada komentar yang tersedia untuk ikut diunduh.", 15, commentsStartY + 8);
+  } else {
+    autoTable(doc, {
+      startY: commentsStartY + 4,
+      head: [["Post", "Author", "Sentiment", "Likes", "Comment"]],
+      body: comments.map((comment) => [
+        `@${comment.postUsername}`,
+        comment.author,
+        comment.sentiment.toUpperCase(),
+        comment.likes.toString(),
+        comment.content,
+      ]),
+      theme: "grid",
+      headStyles: { fillColor: colorPrimary, fontStyle: "bold" },
+      columnStyles: {
+        0: { cellWidth: 30 },
+        1: { cellWidth: 28 },
+        2: { cellWidth: 22, halign: "center" },
+        3: { cellWidth: 16, halign: "right" },
+        4: { cellWidth: 88 },
+      },
+      styles: { fontSize: 7, cellPadding: 2 },
+      margin: { left: 15, right: 15 },
+    });
+  }
+
+  const totalPages = doc.getNumberOfPages();
+  for (let page = 1; page <= totalPages; page += 1) {
+    doc.setPage(page);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+    doc.text("SocialPulse AI platform reports are automatically compiled and validated.", 15, 285);
+    doc.text(`Page ${page} of ${totalPages}`, pageWidth - 30, 285);
+  }
 
   // Save
   doc.save(filename);
