@@ -72,6 +72,18 @@ def get_post(post_id: str):
     return result.data[0]
 
 
+@router.delete("/posts/{post_id}", summary="Delete a scraped post by ID")
+def delete_post(post_id: str):
+    db = get_supabase()
+    existing = db.table("scraped_posts").select("id").eq("id", post_id).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    db.table("scraped_posts").delete().eq("id", post_id).execute()
+    return {"success": True, "post_id": post_id}
+
+
 @router.get(
     "/posts/{post_id}/comments",
     response_model=CommentsResponse,

@@ -39,7 +39,7 @@ export default function LoginPage() {
     setTimeout(() => {
       login(email);
       setIsLoading(false);
-      router.push("/app/explorer");
+      router.push("/");
     }, 1200);
   };
 
@@ -48,7 +48,7 @@ export default function LoginPage() {
     setTimeout(() => {
       login("google.user@gmail.com", "Google User");
       setIsLoading(false);
-      router.push("/app/explorer");
+      router.push("/");
     }, 1000);
   };
 
@@ -79,7 +79,7 @@ export default function LoginPage() {
         <Card glass className="border-zinc-800 shadow-2xl">
           <CardHeader className="space-y-1 text-center">
             <CardTitle className="text-2xl font-bold">Masuk</CardTitle>
-            <CardDescription>Buka halaman scraper dan hasil data Anda</CardDescription>
+            <CardDescription>Masuk lalu langsung kembali ke beranda scraping utama</CardDescription>
           </CardHeader>
           <CardContent>
             {error && (

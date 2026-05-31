@@ -51,7 +51,7 @@ export default function RegisterPage() {
     setTimeout(() => {
       register(name, email);
       setIsLoading(false);
-      router.push("/app/explorer");
+      router.push("/");
     }, 1200);
   };
 
@@ -82,7 +82,7 @@ export default function RegisterPage() {
         <Card glass className="border-zinc-800 shadow-2xl">
           <CardHeader className="space-y-1 text-center">
             <CardTitle className="text-2xl font-bold">Buat Akun</CardTitle>
-            <CardDescription>Masuk ke alur scraping tanpa dashboard tambahan</CardDescription>
+            <CardDescription>Masuk ke alur scraping langsung dari beranda</CardDescription>
           </CardHeader>
           <CardContent>
             {error && (

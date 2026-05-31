@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import yt_dlp
 
 from app.config import settings
+from app.scrapers.profile_metadata import (
+    fetch_open_graph_metadata,
+    parse_compact_number,
+)
 from app.scrapers.base import BaseScraper, ScraperError
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,9 @@ class FacebookScraper(BaseScraper):
     """
 
     def scrape(self, url: str) -> Dict[str, Any]:
+        if self._is_profile_url(url):
+            return self._scrape_profile_metadata(url)
+
         # 1. yt-dlp
         try:
             return self._scrape_via_ytdlp(url)
@@ -57,6 +66,51 @@ class FacebookScraper(BaseScraper):
             "Facebook scraping via yt-dlp failed. "
             "Set META_ACCESS_TOKEN in .env to enable Meta Graph API fallback."
         )
+
+    def _is_profile_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower().strip("/")
+
+        if host.endswith("fb.watch"):
+            return False
+        if path == "profile.php":
+            return True
+        if not path:
+            return False
+        return not any(
+            marker in path
+            for marker in ("posts/", "videos/", "video/", "watch/", "reel/")
+        ) and "v=" not in parsed.query
+
+    def _scrape_profile_metadata(self, url: str) -> Dict[str, Any]:
+        metadata = fetch_open_graph_metadata(url)
+        parsed = urlparse(url)
+        profile_id = parse_qs(parsed.query).get("id", [None])[0]
+        path_segment = parsed.path.strip("/").split("/")[0] if parsed.path.strip("/") else None
+        description = metadata.get("description") or "Profil halaman Facebook"
+
+        match = re.search(
+            r"([\d.,]+[KMB]?)\s+likes(?:\s*[·•]\s*([\d.,]+[KMB]?)\s+talking about this)?",
+            description,
+            re.IGNORECASE,
+        )
+        page_likes = parse_compact_number(match.group(1)) if match else None
+        talking_about = parse_compact_number(match.group(2)) if match and match.group(2) else None
+
+        return {
+            "_source": "facebook_profile_meta",
+            "profile_type": "profile",
+            "id": profile_id or path_segment or metadata.get("title"),
+            "title": metadata.get("title") or "Facebook",
+            "description": description,
+            "author_name": metadata.get("title") or path_segment,
+            "page_name": metadata.get("title") or path_segment,
+            "thumbnail_url": metadata.get("image"),
+            "webpage_url": url,
+            "profile_likes": page_likes,
+            "profile_talking_about": talking_about,
+        }
 
     # ── 1. yt-dlp ─────────────────────────────────────────────────────────────
     def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:

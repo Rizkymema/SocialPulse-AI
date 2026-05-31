@@ -25,6 +25,13 @@ _PATTERNS: list[tuple[re.Pattern[str], Platform]] = [
         ),
         Platform.YOUTUBE,
     ),
+    (
+        re.compile(
+            r"(?:https?://)?(?:www\.|m\.)?youtube\.com/(?:(?:@|channel/|c/|user/)[\w.\-]+)(?:[/?].*)?$",
+            re.IGNORECASE,
+        ),
+        Platform.YOUTUBE,
+    ),
     # TikTok
     (
         re.compile(
@@ -33,10 +40,24 @@ _PATTERNS: list[tuple[re.Pattern[str], Platform]] = [
         ),
         Platform.TIKTOK,
     ),
+    (
+        re.compile(
+            r"(?:https?://)?(?:www\.|vm\.|m\.)?tiktok\.com/@[\w.\-]+/?(?:\?.*)?$",
+            re.IGNORECASE,
+        ),
+        Platform.TIKTOK,
+    ),
     # Instagram
     (
         re.compile(
             r"(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|reels|tv)/[\w\-]+",
+            re.IGNORECASE,
+        ),
+        Platform.INSTAGRAM,
+    ),
+    (
+        re.compile(
+            r"(?:https?://)?(?:www\.)?instagram\.com/(?!p/|reel/|reels/|tv/|stories/|explore/|accounts/|direct/)[A-Za-z0-9._]+/?(?:\?.*)?$",
             re.IGNORECASE,
         ),
         Platform.INSTAGRAM,

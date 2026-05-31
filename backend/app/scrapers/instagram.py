@@ -3,11 +3,16 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 import httpx
 import yt_dlp
 
 from app.config import settings
+from app.scrapers.profile_metadata import (
+    fetch_open_graph_metadata,
+    parse_compact_number,
+)
 from app.scrapers.base import BaseScraper, ScraperError
 
 logger = logging.getLogger(__name__)
@@ -42,6 +47,10 @@ _YDL_OPTS: Dict[str, Any] = {
 _SHORTCODE_RE = re.compile(
     r"instagram\.com/(?:p|reel|tv|reels)/([A-Za-z0-9_\-]+)"
 )
+_PROFILE_RE = re.compile(
+    r"instagram\.com/(?P<username>(?!p/|reel/|reels/|tv/|stories/|explore/|accounts/|direct/)[A-Za-z0-9._]+)/?",
+    re.IGNORECASE,
+)
 
 # Instagram oEmbed publik
 _IG_OEMBED = "https://www.instagram.com/api/v1/oembed/"
@@ -59,6 +68,9 @@ class InstagramScraper(BaseScraper):
     """
 
     def scrape(self, url: str) -> Dict[str, Any]:
+        if self._is_profile_url(url):
+            return self._scrape_profile_metadata(url)
+
         # 1. yt-dlp
         try:
             return self._scrape_via_ytdlp(url)
@@ -80,6 +92,40 @@ class InstagramScraper(BaseScraper):
 
         # 4. Instagram oEmbed publik
         return self._scrape_via_oembed(url)
+
+    def _is_profile_url(self, url: str) -> bool:
+        return _SHORTCODE_RE.search(url) is None and _PROFILE_RE.search(url) is not None
+
+    def _scrape_profile_metadata(self, url: str) -> Dict[str, Any]:
+        metadata = fetch_open_graph_metadata(url)
+        parsed = urlparse(url)
+        username = parsed.path.strip("/").split("/")[0]
+
+        description = metadata.get("description") or f"Profil Instagram @{username}"
+        match = re.search(
+            r"([\d.,]+[KMB]?)\s+Followers,\s+([\d.,]+[KMB]?)\s+Following,\s+([\d.,]+[KMB]?)\s+Posts",
+            description,
+            re.IGNORECASE,
+        )
+
+        followers = parse_compact_number(match.group(1)) if match else None
+        following = parse_compact_number(match.group(2)) if match else None
+        posts_count = parse_compact_number(match.group(3)) if match else None
+
+        return {
+            "_source": "instagram_profile_meta",
+            "profile_type": "profile",
+            "id": username,
+            "title": metadata.get("title") or f"Instagram @{username}",
+            "description": description,
+            "author_name": username,
+            "owner_username": username,
+            "thumbnail_url": metadata.get("image"),
+            "webpage_url": url,
+            "profile_followers": followers,
+            "profile_following": following,
+            "profile_posts": posts_count,
+        }
 
     # ── 1. yt-dlp ─────────────────────────────────────────────────────────────
     def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:

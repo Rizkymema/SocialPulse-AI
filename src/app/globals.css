@@ -1,35 +1,35 @@
 @import "tailwindcss";
 
 :root {
-  --background: #030303;
-  --foreground: #f4f4f5;
+  --background: #05070f;
+  --foreground: #f8fafc;
   
-  --card: #09090b;
-  --card-foreground: #f4f4f5;
+  --card: #090d16;
+  --card-foreground: #f8fafc;
   
-  --popover: #09090b;
-  --popover-foreground: #f4f4f5;
+  --popover: #090d16;
+  --popover-foreground: #f8fafc;
   
   --primary: #6366f1;
   --primary-foreground: #ffffff;
   
-  --secondary: #18181b;
-  --secondary-foreground: #f4f4f5;
+  --secondary: #0f172a;
+  --secondary-foreground: #f8fafc;
   
-  --muted: #0f0f13;
-  --muted-foreground: #71717a;
+  --muted: #0d1321;
+  --muted-foreground: #94a3b8;
   
-  --accent: #27272a;
-  --accent-foreground: #f4f4f5;
+  --accent: #1e1b4b;
+  --accent-foreground: #f8fafc;
   
   --destructive: #ef4444;
   --destructive-foreground: #ffffff;
   
-  --border: #1f1f23;
-  --input: #1f1f23;
-  --ring: #818cf8;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #6366f1;
   
-  --radius: 0.75rem;
+  --radius: 1rem;
 }
 
 @theme inline {
@@ -59,10 +59,22 @@
 }
 
 body {
-  background-color: var(--background);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.15), transparent 45%),
+    radial-gradient(circle at 100% 30%, rgba(139, 92, 246, 0.08), transparent 40%),
+    linear-gradient(180deg, #05070f 0%, #020306 100%);
   color: var(--foreground);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-family: var(--font-body), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(99, 102, 241, 0.3);
+  color: #ffffff;
+}
+
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
 }
 
 /* Custom Scrollbar */
@@ -71,19 +83,19 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #030303;
+  background: #05070f;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1f1f23;
+  background: #1e293b;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #27272a;
+  background: #334155;
 }
 
 /* Glassmorphism Styles */
 .bg-glass {
-  background: rgba(9, 9, 11, 0.65);
+  background: rgba(9, 13, 22, 0.65);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -100,6 +112,7 @@ body {
   background-size: 40px 40px;
 }
 
+/* Glow Utilities */
 .glow-indigo {
   filter: blur(100px);
   background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%);
@@ -110,9 +123,14 @@ body {
   background: radial-gradient(circle, rgba(139, 92, 246, 0.12) 0%, transparent 70%);
 }
 
+.glow-blue {
+  filter: blur(110px);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
+}
+
 /* Micro-animations */
 .hover-glow:hover {
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 25px rgba(99, 102, 241, 0.2);
   border-color: rgba(99, 102, 241, 0.3);
 }
 
@@ -127,4 +145,45 @@ body {
   50% {
     box-shadow: 0 0 20px rgba(99, 102, 241, 0.25);
   }
+}
+
+.home-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: radial-gradient(circle at top, rgba(0, 0, 0, 0.95), transparent 74%);
+}
+
+.home-noise {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 0.7px, transparent 0.7px);
+  background-size: 16px 16px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), transparent 86%);
+}
+
+.home-glow-indigo {
+  filter: blur(130px);
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.2) 0%, rgba(99, 102, 241, 0.06) 34%, transparent 72%);
+}
+
+.home-glow-violet {
+  filter: blur(140px);
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, transparent 72%);
+}
+
+.home-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 32px 120px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(22px);
+}
+
+.home-pill {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
+}
+
+.home-card-shadow {
+  box-shadow: 0 32px 120px rgba(0, 0, 0, 0.4);
 }

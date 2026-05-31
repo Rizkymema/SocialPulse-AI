@@ -164,6 +164,19 @@ export async function getPosts(params?: {
   return res.json();
 }
 
+export async function deletePost(postId: string): Promise<{ success: boolean; post_id: string }> {
+  const res = await fetch(`${BASE_URL}/api/posts/${postId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail ?? `Failed to delete post: ${res.status}`);
+  }
+
+  return res.json();
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   const res = await fetch(`${BASE_URL}/api/analytics/summary`);

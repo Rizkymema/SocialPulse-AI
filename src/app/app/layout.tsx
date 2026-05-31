@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { useSaaSStore } from "@/store/useSaaSStore";
 
 const menuItems = [
-  { name: "Scraper & Hasil", icon: TableProperties, path: "/app/explorer" },
+  { name: "Arsip Hasil", icon: TableProperties, path: "/app/explorer" },
 ];
 
 const subscribe = () => () => {};
@@ -48,7 +48,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       <aside className="hidden lg:flex flex-col w-72 bg-[#09090b]/80 backdrop-blur-md border-r border-white/5 relative z-30 shrink-0">
         <div className="flex h-16 items-center px-6 border-b border-white/5">
-          <Link href="/app/explorer" className="flex items-center space-x-2">
+          <Link href="/" className="flex items-center space-x-2">
             <div className="flex h-8 w-8 items-center justify-center rounded bg-indigo-600">
               <Sparkles className="h-4 w-4 text-white" />
             </div>
@@ -86,10 +86,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               Fokus Penggunaan
             </p>
             <div className="space-y-2 text-xs text-zinc-400 leading-relaxed">
-              <p>1. Tempel URL postingan publik</p>
-              <p>2. Tunggu scraping selesai</p>
-              <p>3. Lihat isi postingan dan komentar</p>
-              <p>4. Unduh hasil ke CSV, Excel, atau PDF</p>
+              <p>1. Mulai scrape dari beranda</p>
+              <p>2. Kembali ke sini untuk arsip hasil</p>
+              <p>3. Lihat komentar dan kelola pilihan</p>
+              <p>4. Hapus atau unduh hasil yang dibutuhkan</p>
             </div>
           </div>
         </div>
@@ -154,7 +154,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <p className="font-semibold text-indigo-400 uppercase tracking-[0.18em]">
                     Fokus Penggunaan
                   </p>
-                  <p>Tempel URL, cek hasil, buka komentar, lalu unduh data.</p>
+                  <p>Mulai scrape dari beranda, lalu gunakan halaman ini untuk mengelola arsip hasil.</p>
                 </div>
               </div>
             </motion.aside>
@@ -174,22 +174,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white truncate">
-                Pusat Scraping Data Media Sosial
+                Arsip hasil scraping media sosial
               </p>
               <p className="text-xs text-zinc-500 truncate">
-                Tempel URL, lihat isi postingan dan komentar, lalu unduh hasil scraping.
+                Beranda adalah titik mulai scraping; halaman ini tetap tersedia untuk melihat dan mengelola arsip hasil.
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
-            <Link href="/app/explorer">
+            <Link href="/">
               <Button
                 variant="outline"
                 size="sm"
                 className="hidden md:flex border-indigo-500/20 hover:border-indigo-500/40 bg-indigo-500/5 hover:bg-indigo-500/10 text-indigo-400 text-xs font-semibold gap-1.5"
               >
-                <Link2 className="h-3.5 w-3.5" /> Buka Halaman Scraper
+                <Link2 className="h-3.5 w-3.5" /> Kembali ke Beranda
               </Button>
             </Link>
 

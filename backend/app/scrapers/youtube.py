@@ -4,6 +4,7 @@ from copy import deepcopy
 import logging
 import re
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 import httpx
 import yt_dlp
@@ -68,6 +69,9 @@ class YouTubeScraper(BaseScraper):
     """
 
     def scrape(self, url: str) -> Dict[str, Any]:
+        if self._is_profile_url(url):
+            return self._scrape_profile_via_ytdlp(url)
+
         # Try YouTube Data API first (richer data, respects quotas)
         if settings.YOUTUBE_API_KEY:
             try:
@@ -77,6 +81,17 @@ class YouTubeScraper(BaseScraper):
 
         # Fall back to yt-dlp
         return self._scrape_via_ytdlp(url)
+
+    def _is_profile_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+
+        if "youtu.be" in host:
+            return False
+        return bool(
+            re.search(r"^/(?:@|channel/|c/|user/)", path, re.IGNORECASE)
+        )
 
     # ── YouTube Data API v3 ───────────────────────────────────────────────────
     def _scrape_via_api(self, url: str) -> Dict[str, Any]:
@@ -139,6 +154,68 @@ class YouTubeScraper(BaseScraper):
             if info is None:
                 raise ScraperError("yt-dlp returned no info for URL")
             return info
+
+    def _scrape_profile_via_ytdlp(self, url: str) -> Dict[str, Any]:
+        opts = deepcopy(_BASE_YDL_OPTS)
+        opts["extract_flat"] = True
+        opts["playlistend"] = 1
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info is None:
+                    raise ScraperError("yt-dlp returned no profile info for URL")
+
+            first_entry = next(
+                (
+                    entry
+                    for entry in info.get("entries") or []
+                    if isinstance(entry, dict)
+                ),
+                {},
+            )
+            profile_name = (
+                info.get("uploader")
+                or info.get("channel")
+                or info.get("title")
+                or "unknown"
+            )
+            follower_count = info.get("channel_follower_count")
+            description_parts = [f"Profil channel YouTube {profile_name}."]
+            if isinstance(follower_count, int) and follower_count > 0:
+                description_parts.append(
+                    f"Subscriber: {follower_count:,}."
+                )
+
+            bio = (info.get("description") or "").strip()
+            if bio:
+                description_parts.append(bio[:1600])
+
+            sample_title = first_entry.get("title")
+            if isinstance(sample_title, str) and sample_title.strip():
+                description_parts.append(
+                    f"Contoh video terbaru: {sample_title.strip()}"
+                )
+
+            return {
+                "_source": "yt_dlp_profile",
+                "profile_type": "profile",
+                "id": info.get("id"),
+                "title": profile_name,
+                "description": " ".join(description_parts).strip(),
+                "uploader": profile_name,
+                "channel": profile_name,
+                "channel_follower_count": follower_count,
+                "thumbnail": first_entry.get("thumbnail") or info.get("thumbnail"),
+                "webpage_url": info.get("webpage_url") or url,
+                "profile_followers": follower_count,
+                "profile_sample_url": first_entry.get("url"),
+                "profile_sample_title": sample_title,
+            }
+        except yt_dlp.utils.DownloadError as exc:
+            raise ScraperError(f"yt-dlp profile download error: {exc}") from exc
+        except Exception as exc:
+            raise ScraperError(f"Unexpected yt-dlp profile error: {exc}") from exc
 
     def _backfill_missing_engagement(self, url: str, info: Dict[str, Any]) -> None:
         missing_fields = [
