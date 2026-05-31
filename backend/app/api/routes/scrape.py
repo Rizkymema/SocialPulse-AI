@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -152,8 +153,15 @@ async def submit_scrape(payload: ScrapeRequest):
         }
     ).execute()
 
-    # Fire background scrape
-    asyncio.create_task(_run_scrape(job_id, url, platform))
+    # Vercel Functions do not guarantee background work after the response ends.
+    if os.getenv("VERCEL"):
+        await _run_scrape(job_id, url, platform)
+
+        latest = db.table("scrape_jobs").select("*").eq("id", job_id).execute()
+        if latest.data:
+            return _job_response(latest.data[0])
+    else:
+        asyncio.create_task(_run_scrape(job_id, url, platform))
 
     return {
         "job_id": job_id,
