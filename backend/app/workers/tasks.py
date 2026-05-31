@@ -64,7 +64,11 @@ def scrape_url_task(self, job_id: str, url: str) -> Dict[str, Any]:
 
         # ── Scrape ────────────────────────────────────────────────────────
         scraper = get_scraper(str(platform))
-        raw_data = scraper.scrape(url)
+        import inspect
+        if "comment_limit" in inspect.signature(scraper.scrape).parameters:
+            raw_data = scraper.scrape(url, comment_limit=200)
+        else:
+            raw_data = scraper.scrape(url)
 
         # ── Normalise ─────────────────────────────────────────────────────
         normalised = DataNormalizer.normalize(str(platform), raw_data, url)

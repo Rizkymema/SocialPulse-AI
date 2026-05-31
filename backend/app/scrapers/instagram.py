@@ -67,19 +67,19 @@ class InstagramScraper(BaseScraper):
     4. Instagram oEmbed publik — fallback ringan (metadata only)
     """
 
-    def scrape(self, url: str) -> Dict[str, Any]:
+    def scrape(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         if self._is_profile_url(url):
             return self._scrape_profile_metadata(url)
 
         # 1. yt-dlp
         try:
-            return self._scrape_via_ytdlp(url)
+            return self._scrape_via_ytdlp(url, comment_limit=comment_limit)
         except ScraperError as exc:
             logger.warning("yt-dlp failed for Instagram (%s), trying instaloader", exc)
 
         # 2. instaloader
         try:
-            return self._scrape_via_instaloader(url)
+            return self._scrape_via_instaloader(url, comment_limit=comment_limit)
         except Exception as exc:
             logger.warning("instaloader failed (%s), trying oEmbed", exc)
 
@@ -128,9 +128,16 @@ class InstagramScraper(BaseScraper):
         }
 
     # ── 1. yt-dlp ─────────────────────────────────────────────────────────────
-    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         try:
-            with yt_dlp.YoutubeDL(_YDL_OPTS) as ydl:
+            from copy import deepcopy
+            opts = deepcopy(_YDL_OPTS)
+            opts["extractor_args"] = {
+                "instagram": {
+                    "max_comments": [str(comment_limit or 200)],
+                }
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
                     raise ScraperError("yt-dlp returned no info")
@@ -150,7 +157,7 @@ class InstagramScraper(BaseScraper):
             raise ScraperError(f"Unexpected yt-dlp error: {exc}") from exc
 
     # ── 2. instaloader ────────────────────────────────────────────────────────
-    def _scrape_via_instaloader(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_instaloader(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         """Scrape post publik via instaloader — tidak memerlukan login."""
         try:
             import instaloader
@@ -175,9 +182,12 @@ class InstagramScraper(BaseScraper):
 
         post = instaloader.Post.from_shortcode(L.context, shortcode)
 
+        limit = int(comment_limit) if comment_limit else 200
         comments: List[Dict[str, Any]] = []
         try:
             for c in post.get_comments():
+                if len(comments) >= limit:
+                    break
                 comments.append({
                     "id": str(c.id),
                     "text": c.text,

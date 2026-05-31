@@ -116,16 +116,35 @@ export const exportToCSV = async (
       return [[...postColumns, "", "", "", "", "", "", ""]];
     }
 
-    return comments.map((comment) => [
-      ...postColumns,
-      comment.id,
-      normalizePortableText(comment.author),
-      normalizePortableText(comment.content),
-      comment.likes,
-      comment.timestamp,
-      comment.parent,
-      comment.sentiment.toUpperCase(),
-    ]);
+    return comments.map((comment, index) => {
+      const postCols = index === 0 ? postColumns : [
+        post.id,
+        post.platform.toUpperCase(),
+        normalizePortableText(post.username),
+        post.url,
+        "", // Leave Content empty to keep it tidy
+        "", // Likes
+        "", // Comments
+        "", // ExportedComments
+        "", // Shares
+        "", // Views
+        "", // Timestamp
+        "", // Sentiment
+        "", // Positive
+        "", // Neutral
+        "", // Negative
+      ];
+      return [
+        ...postCols,
+        comment.id,
+        normalizePortableText(comment.author),
+        normalizePortableText(comment.content),
+        comment.likes,
+        comment.timestamp,
+        comment.parent,
+        comment.sentiment.toUpperCase(),
+      ];
+    });
   });
 
   const csvContent = [

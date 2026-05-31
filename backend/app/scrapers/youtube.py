@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import logging
 import re
 from typing import Any, Dict
@@ -53,7 +54,7 @@ def _build_ydl_opts(
     if include_comments:
         opts["getcomments"] = True
         # Keep inline scrapes bounded so Vercel requests can finish reliably.
-        youtube_args["max_comments"] = [str(comment_limit or 100)]
+        youtube_args["max_comments"] = [str(comment_limit or 200)]
 
     if player_client:
         youtube_args["player_client"] = [player_client]
@@ -71,14 +72,14 @@ class YouTubeScraper(BaseScraper):
     2. yt-dlp extraction (public video, no auth required)
     """
 
-    def scrape(self, url: str, comment_limit: int | str | None = None) -> Dict[str, Any]:
+    def scrape(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         if self._is_profile_url(url):
             return self._scrape_profile_via_ytdlp(url)
 
         # Try YouTube Data API first (richer data, respects quotas)
         if settings.YOUTUBE_API_KEY:
             try:
-                return self._scrape_via_api(url)
+                return self._scrape_via_api(url, comment_limit=comment_limit)
             except Exception as exc:
                 logger.warning("YouTube API failed, falling back to yt-dlp: %s", exc)
 
@@ -97,7 +98,7 @@ class YouTubeScraper(BaseScraper):
         )
 
     # ── YouTube Data API v3 ───────────────────────────────────────────────────
-    def _scrape_via_api(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_api(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         import re
         import httpx
 
@@ -126,7 +127,7 @@ class YouTubeScraper(BaseScraper):
         snippet = item.get("snippet", {})
         stats = item.get("statistics", {})
 
-        return {
+        video_info = {
             "id": video_id,
             "title": snippet.get("title"),
             "description": snippet.get("description"),
@@ -144,6 +145,64 @@ class YouTubeScraper(BaseScraper):
             "tags": snippet.get("tags", []),
             "_source": "youtube_api_v3",
         }
+
+        # Fetch comments via API
+        comments_list = []
+        limit = int(comment_limit) if comment_limit else 200
+        try:
+            next_page_token = None
+            while len(comments_list) < limit:
+                max_results = min(100, limit - len(comments_list))
+                comments_url = (
+                    "https://www.googleapis.com/youtube/v3/commentThreads"
+                    f"?part=snippet&videoId={video_id}&maxResults={max_results}&key={settings.YOUTUBE_API_KEY}"
+                )
+                if next_page_token:
+                    comments_url += f"&pageToken={next_page_token}"
+                comments_resp = httpx.get(comments_url, timeout=15)
+                if comments_resp.status_code != 200:
+                    break
+                comments_data = comments_resp.json()
+                thread_items = comments_data.get("items", [])
+                if not thread_items:
+                    break
+                for item in thread_items:
+                    top_comment = item.get("snippet", {}).get("topLevelComment", {})
+                    c_snippet = top_comment.get("snippet", {})
+                    
+                    published_at = c_snippet.get("publishedAt")
+                    timestamp = None
+                    if published_at:
+                        try:
+                            # 2020-06-01T00:00:00Z
+                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                            timestamp = int(dt.timestamp())
+                        except Exception:
+                            try:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+                                timestamp = int(dt.timestamp())
+                            except Exception:
+                                pass
+
+                    comments_list.append({
+                        "id": top_comment.get("id"),
+                        "text": c_snippet.get("textDisplay", ""),
+                        "author": c_snippet.get("authorDisplayName"),
+                        "author_id": c_snippet.get("authorChannelId", {}).get("value"),
+                        "timestamp": timestamp,
+                        "like_count": int(c_snippet.get("likeCount") or 0),
+                        "is_favorited": False,
+                        "author_is_uploader": False,
+                        "parent": "root",
+                    })
+                next_page_token = comments_data.get("nextPageToken")
+                if not next_page_token:
+                    break
+        except Exception as exc:
+            logger.warning("Failed to fetch comments via YouTube API: %s", exc)
+
+        video_info["comments"] = comments_list
+        return video_info
 
     # ── yt-dlp ────────────────────────────────────────────────────────────────
     def _extract_with_ytdlp(
@@ -312,7 +371,7 @@ class YouTubeScraper(BaseScraper):
         self,
         url: str,
         *,
-        comment_limit: int | str | None = None,
+        comment_limit: int | str | None = 200,
     ) -> Dict[str, Any]:
         try:
             info = self._extract_with_ytdlp(

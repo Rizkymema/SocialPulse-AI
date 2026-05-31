@@ -36,12 +36,12 @@ class TikTokScraper(BaseScraper):
     2. TikTok oEmbed API – lightweight fallback (title, author, thumbnail)
     """
 
-    def scrape(self, url: str) -> Dict[str, Any]:
+    def scrape(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         if self._is_profile_url(url):
             return self._scrape_profile_via_ytdlp(url)
 
         try:
-            return self._scrape_via_ytdlp(url)
+            return self._scrape_via_ytdlp(url, comment_limit=comment_limit)
         except ScraperError as exc:
             logger.warning("yt-dlp failed for TikTok, trying oEmbed: %s", exc)
 
@@ -53,9 +53,16 @@ class TikTokScraper(BaseScraper):
             re.search(r"^/@[\w.\-]+/?$", parsed.path, re.IGNORECASE)
         )
 
-    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         try:
-            with yt_dlp.YoutubeDL(_YDL_OPTS) as ydl:
+            from copy import deepcopy
+            opts = deepcopy(_YDL_OPTS)
+            opts["extractor_args"] = {
+                "tiktok": {
+                    "max_comments": [str(comment_limit or 200)],
+                }
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
                     raise ScraperError("yt-dlp returned no info")

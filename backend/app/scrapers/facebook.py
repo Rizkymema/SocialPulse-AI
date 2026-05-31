@@ -48,13 +48,13 @@ class FacebookScraper(BaseScraper):
     2. Meta Graph API oEmbed — jika META_ACCESS_TOKEN dikonfigurasi
     """
 
-    def scrape(self, url: str) -> Dict[str, Any]:
+    def scrape(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         if self._is_profile_url(url):
             return self._scrape_profile_metadata(url)
 
         # 1. yt-dlp
         try:
-            return self._scrape_via_ytdlp(url)
+            return self._scrape_via_ytdlp(url, comment_limit=comment_limit)
         except ScraperError as exc:
             logger.warning("yt-dlp failed for Facebook (%s), trying Graph oEmbed", exc)
 
@@ -113,9 +113,16 @@ class FacebookScraper(BaseScraper):
         }
 
     # ── 1. yt-dlp ─────────────────────────────────────────────────────────────
-    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
         try:
-            with yt_dlp.YoutubeDL(_YDL_OPTS) as ydl:
+            from copy import deepcopy
+            opts = deepcopy(_YDL_OPTS)
+            opts["extractor_args"] = {
+                "facebook": {
+                    "max_comments": [str(comment_limit or 200)],
+                }
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
                     raise ScraperError("yt-dlp returned no info")

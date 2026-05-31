@@ -39,6 +39,9 @@ def _is_write_access_error(exc: Exception) -> bool:
 async def _scrape_and_normalize(url: str, platform: str) -> Dict[str, Any]:
     def _blocking_scrape() -> Dict[str, Any]:
         scraper = get_scraper(platform)
+        import inspect
+        if "comment_limit" in inspect.signature(scraper.scrape).parameters:
+            return scraper.scrape(url, comment_limit=200)
         return scraper.scrape(url)
 
     raw_data = await asyncio.get_event_loop().run_in_executor(None, _blocking_scrape)
