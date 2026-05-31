@@ -51,7 +51,7 @@ export default function RegisterPage() {
     setTimeout(() => {
       register(name, email);
       setIsLoading(false);
-      router.push("/app/overview");
+      router.push("/app/explorer");
     }, 1200);
   };
 
@@ -76,13 +76,13 @@ export default function RegisterPage() {
               SocialPulse <span className="text-indigo-400">AI</span>
             </span>
           </Link>
-          <p className="text-xs text-muted-foreground">Social Media Intelligence Platform</p>
+          <p className="text-xs text-muted-foreground">Buat akun untuk memakai scraper media sosial</p>
         </div>
 
         <Card glass className="border-zinc-800 shadow-2xl">
           <CardHeader className="space-y-1 text-center">
-            <CardTitle className="text-2xl font-bold">Create Account</CardTitle>
-            <CardDescription>Get started with a 14-day free trial</CardDescription>
+            <CardTitle className="text-2xl font-bold">Buat Akun</CardTitle>
+            <CardDescription>Masuk ke alur scraping tanpa dashboard tambahan</CardDescription>
           </CardHeader>
           <CardContent>
             {error && (

@@ -39,7 +39,7 @@ export default function LoginPage() {
     setTimeout(() => {
       login(email);
       setIsLoading(false);
-      router.push("/app/overview");
+      router.push("/app/explorer");
     }, 1200);
   };
 
@@ -48,7 +48,7 @@ export default function LoginPage() {
     setTimeout(() => {
       login("google.user@gmail.com", "Google User");
       setIsLoading(false);
-      router.push("/app/overview");
+      router.push("/app/explorer");
     }, 1000);
   };
 
@@ -73,13 +73,13 @@ export default function LoginPage() {
               SocialPulse <span className="text-indigo-400">AI</span>
             </span>
           </Link>
-          <p className="text-xs text-muted-foreground">Social Media Intelligence Platform</p>
+          <p className="text-xs text-muted-foreground">Halaman akses ke scraper media sosial</p>
         </div>
 
         <Card glass className="border-zinc-800 shadow-2xl">
           <CardHeader className="space-y-1 text-center">
-            <CardTitle className="text-2xl font-bold">Welcome Back</CardTitle>
-            <CardDescription>Enter your credentials to access your dashboard</CardDescription>
+            <CardTitle className="text-2xl font-bold">Masuk</CardTitle>
+            <CardDescription>Buka halaman scraper dan hasil data Anda</CardDescription>
           </CardHeader>
           <CardContent>
             {error && (

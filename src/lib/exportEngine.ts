@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import { Post } from "./mockData";
+import type { ExportPost } from "./exportTypes";
 
 // Add declaration for autoTable extension on jsPDF (v5 standalone API)
 
@@ -23,7 +23,7 @@ const escapeCSV = (val: unknown) => {
 /**
  * 1. CSV EXPORT
  */
-export const exportToCSV = (posts: Post[], filename: string = "social_pulse_data.csv") => {
+export const exportToCSV = (posts: ExportPost[], filename: string = "social_pulse_data.csv") => {
   const headers = ["ID", "Platform", "Username", "Content", "Likes", "Comments", "Shares", "Timestamp", "Sentiment"];
   const rows = posts.map((p) => [
     p.id,
@@ -56,7 +56,7 @@ export const exportToCSV = (posts: Post[], filename: string = "social_pulse_data
 /**
  * 2. EXCEL EXPORT (Multi-sheet)
  */
-export const exportToExcel = (posts: Post[], workspaceName: string, filename: string = "social_pulse_data.xlsx") => {
+export const exportToExcel = (posts: ExportPost[], workspaceName: string, filename: string = "social_pulse_data.xlsx") => {
   const wb = XLSX.utils.book_new();
 
   // --- Sheet 1: Summary Stats ---
@@ -139,7 +139,7 @@ export const exportToExcel = (posts: Post[], workspaceName: string, filename: st
  * 3. PDF REPORT EXPORT (AI-styled premium document)
  */
 export const exportToPDF = (
-  posts: Post[],
+  posts: ExportPost[],
   workspaceName: string,
   aiSummary: string,
   filename: string = "social_pulse_report.pdf"

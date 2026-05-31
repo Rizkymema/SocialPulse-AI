@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SocialPulse AI – Social Media Intelligence Platform",
-  description: "Monitor & Analyze Social Media Data in Real-Time with AI sentiment analysis, advanced analytics, and custom multi-tenant workspaces.",
+  title: "SocialPulse AI - Scraper Media Sosial",
+  description: "Scrape postingan media sosial, lihat isi konten dan komentar, lalu unduh hasilnya dalam beberapa format.",
 };
 
 export default function RootLayout({
