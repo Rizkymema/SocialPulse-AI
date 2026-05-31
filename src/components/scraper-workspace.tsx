@@ -352,11 +352,6 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     const payloads = await Promise.all(
       posts.map(async (post) => {
         const loadedComments = await loadCommentsForExport(post);
-        if (post.comments > 0 && loadedComments.length < post.comments) {
-          throw new Error(
-            `Komentar untuk @${post.username ?? "unknown"} belum lengkap dimuat. Coba buka komentar post tersebut dulu lalu ulangi download.`
-          );
-        }
 
         const exportComments: ExportComment[] = loadedComments.map((comment, index) => ({
           id: comment.id ?? `${post.id}-comment-${index + 1}`,
