@@ -111,6 +111,11 @@ export interface CommentsResponse {
   comments: Comment[];
 }
 
+export interface GetPostCommentsOptions {
+  parent?: string;
+  refresh?: boolean;
+}
+
 // ── Scrape ────────────────────────────────────────────────────────────────────
 export async function submitScrapeJob(url: string): Promise<ScrapeJob> {
   const res = await fetch(`${BASE_URL}/api/scrape`, {
@@ -226,10 +231,13 @@ export async function getTopPosts(limit = 10): Promise<TopPost[]> {
 // ── Comments ──────────────────────────────────────────────────────────────────
 export async function getPostComments(
   postId: string,
-  parent?: string
+  options?: GetPostCommentsOptions
 ): Promise<CommentsResponse> {
-  const q = parent ? `?parent=${encodeURIComponent(parent)}` : "";
-  const res = await fetch(`${BASE_URL}/api/posts/${postId}/comments${q}`);
+  const query = new URLSearchParams();
+  if (options?.parent) query.set("parent", options.parent);
+  if (options?.refresh) query.set("refresh", "true");
+  const q = query.toString();
+  const res = await fetch(`${BASE_URL}/api/posts/${postId}/comments${q ? `?${q}` : ""}`);
   if (!res.ok) throw new Error(`Failed to load comments: ${res.status}`);
   return res.json();
 }

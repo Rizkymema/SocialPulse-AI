@@ -57,6 +57,56 @@ type ScraperWorkspaceProps = {
   themeMode?: "dark" | "light";
 };
 
+const normalizeExportText = (value: string | undefined) =>
+  value?.replace(/\s+/g, " ").trim() ?? "";
+
+const getCommentIdentity = (comment: Comment) => {
+  const normalizedText = normalizeExportText(comment.text).toLowerCase();
+  const timestamp = typeof comment.timestamp === "number" ? String(comment.timestamp) : "";
+
+  return [
+    comment.id ?? "",
+    comment.parent ?? "root",
+    comment.author_id ?? comment.author ?? "",
+    timestamp,
+    normalizedText,
+  ].join("::");
+};
+
+const dedupeComments = (comments: Comment[]) => {
+  const seen = new Set<string>();
+
+  return comments.filter((comment) => {
+    const key = getCommentIdentity(comment);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return normalizeExportText(comment.text).length > 0;
+  });
+};
+
+const sortCommentsForExport = (comments: Comment[]) =>
+  [...comments].sort((left, right) => {
+    const leftIsRoot = (left.parent ?? "root") === "root";
+    const rightIsRoot = (right.parent ?? "root") === "root";
+    if (leftIsRoot !== rightIsRoot) {
+      return leftIsRoot ? -1 : 1;
+    }
+
+    if (!leftIsRoot && left.parent !== right.parent) {
+      return String(left.parent).localeCompare(String(right.parent));
+    }
+
+    const leftTimestamp = typeof left.timestamp === "number" ? left.timestamp : 0;
+    const rightTimestamp = typeof right.timestamp === "number" ? right.timestamp : 0;
+    if (leftTimestamp !== rightTimestamp) {
+      return leftTimestamp - rightTimestamp;
+    }
+
+    return getCommentIdentity(left).localeCompare(getCommentIdentity(right));
+  });
+
 export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWorkspaceProps) {
   const { addNotification } = useSaaSStore();
   const isEmbedded = mode === "embedded";
@@ -113,13 +163,13 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       return [];
     }
 
-    return rawComments
-      .map((comment, index) => ({
+    return dedupeComments(
+      rawComments.map((comment, index) => ({
         id:
           typeof comment.id === "string"
             ? comment.id
             : `inline-${post.id}-${index}`,
-        text: typeof comment.text === "string" ? comment.text : "",
+        text: typeof comment.text === "string" ? comment.text.trim() : "",
         author: typeof comment.author === "string" ? comment.author : undefined,
         author_id:
           typeof comment.author_id === "string" ? comment.author_id : undefined,
@@ -134,8 +184,61 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
             ? comment.parent
             : "root",
       }))
-      .filter((comment) => comment.text.length > 0);
+    );
   }, []);
+
+  const loadBestAvailableComments = useCallback(async (
+    post: ScrapedPost,
+    options?: { refreshIfIncomplete?: boolean }
+  ): Promise<Comment[]> => {
+    const isPersistedPost = !post.id.startsWith("ephemeral-");
+    let resolvedComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+    let fetchError: Error | null = null;
+
+    if (resolvedComments.length === 0 && isPersistedPost) {
+      try {
+        const res = await getPostComments(post.id);
+        resolvedComments = dedupeComments(res.comments);
+      } catch (error) {
+        fetchError = error instanceof Error ? error : new Error("Gagal memuat komentar.");
+      }
+    }
+
+    if (
+      options?.refreshIfIncomplete &&
+      isPersistedPost &&
+      post.comments > 0 &&
+      resolvedComments.length < post.comments
+    ) {
+      try {
+        const res = await getPostComments(post.id, { refresh: true });
+        const refreshedComments = dedupeComments(res.comments);
+        if (refreshedComments.length > resolvedComments.length) {
+          resolvedComments = refreshedComments;
+        }
+      } catch (error) {
+        if (!fetchError && resolvedComments.length === 0) {
+          fetchError = error instanceof Error
+            ? error
+            : new Error("Gagal memuat komentar terbaru.");
+        }
+      }
+    }
+
+    if (resolvedComments.length > 0) {
+      setSessionComments((current) => ({
+        ...current,
+        [post.id]: resolvedComments,
+      }));
+      return resolvedComments;
+    }
+
+    if (fetchError) {
+      throw fetchError;
+    }
+
+    return [];
+  }, [extractInlineComments, sessionComments]);
 
   const upsertScrapedPost = useCallback((post: ScrapedPost) => {
     setApiPosts((current) => [post, ...current.filter((item) => item.id !== post.id)]);
@@ -229,18 +332,17 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     setCommentsLoading(true);
 
     try {
-      const inlineComments = sessionComments[post.id] ?? extractInlineComments(post);
-      if (inlineComments.length > 0) {
-        setComments(inlineComments);
-        return;
-      }
+      const nextComments = await loadBestAvailableComments(post, {
+        refreshIfIncomplete: true,
+      });
 
-      const res = await getPostComments(post.id);
-      setComments(res.comments);
-      setSessionComments((current) => ({
-        ...current,
-        [post.id]: res.comments,
-      }));
+      setComments(sortCommentsForExport(nextComments));
+
+      if (nextComments.length === 0) {
+        setCommentsError(
+          "Komentar belum tersedia atau belum ikut tersimpan saat proses scraping."
+        );
+      }
     } catch {
       setCommentsError(
         "Komentar belum tersedia atau belum ikut tersimpan saat proses scraping."
@@ -329,47 +431,41 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   };
 
   const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<Comment[]> => {
-    const cachedComments = sessionComments[post.id] ?? extractInlineComments(post);
-    if (cachedComments.length > 0) {
-      if (!sessionComments[post.id]) {
-        setSessionComments((current) => ({
-          ...current,
-          [post.id]: cachedComments,
-        }));
-      }
-      return cachedComments;
-    }
+    const commentsForExport = await loadBestAvailableComments(post, {
+      refreshIfIncomplete: true,
+    });
 
-    const res = await getPostComments(post.id);
-    setSessionComments((current) => ({
-      ...current,
-      [post.id]: res.comments,
-    }));
-    return res.comments;
-  }, [extractInlineComments, sessionComments]);
+    return sortCommentsForExport(commentsForExport);
+  }, [loadBestAvailableComments]);
 
   const buildExportDataset = useCallback(async (posts: ScrapedPost[]): Promise<ExportDataset> => {
     const payloads = await Promise.all(
       posts.map(async (post) => {
         const loadedComments = await loadCommentsForExport(post);
 
-        const exportComments: ExportComment[] = loadedComments.map((comment, index) => ({
-          id: comment.id ?? `${post.id}-comment-${index + 1}`,
-          postId: post.id,
-          postPlatform: post.platform as ExportPost["platform"],
-          postUrl: post.url,
-          postUsername: post.username ?? "unknown",
-          postTimestamp: post.posted_at ?? post.created_at,
-          author: comment.author ?? "Anonymous",
-          content: comment.text,
-          likes: comment.like_count,
-          timestamp:
-            typeof comment.timestamp === "number"
-              ? new Date(comment.timestamp * 1000).toISOString()
-              : post.posted_at ?? post.created_at,
-          parent: comment.parent,
-          sentiment: detectSentiment(comment.text),
-        }));
+        const exportComments: ExportComment[] = loadedComments
+          .map((comment, index) => {
+            const content = normalizeExportText(comment.text);
+
+            return {
+              id: comment.id ?? `${post.id}-comment-${index + 1}`,
+              postId: post.id,
+              postPlatform: post.platform as ExportPost["platform"],
+              postUrl: post.url,
+              postUsername: normalizeExportText(post.username ?? "unknown") || "unknown",
+              postTimestamp: post.posted_at ?? post.created_at,
+              author: normalizeExportText(comment.author ?? "Anonymous") || "Anonymous",
+              content,
+              likes: comment.like_count,
+              timestamp:
+                typeof comment.timestamp === "number"
+                  ? new Date(comment.timestamp * 1000).toISOString()
+                  : post.posted_at ?? post.created_at,
+              parent: comment.parent,
+              sentiment: detectSentiment(content),
+            };
+          })
+          .filter((comment) => comment.content.length > 0);
 
         const commentSentiments = summarizeSentiments(
           exportComments.map((comment) => comment.sentiment)
@@ -379,16 +475,17 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
           id: post.id,
           platform: post.platform as ExportPost["platform"],
           url: post.url,
-          username: post.username ?? "unknown",
-          content: post.content ?? "",
+          username: normalizeExportText(post.username ?? "unknown") || "unknown",
+          content: normalizeExportText(post.content ?? ""),
           likes: post.likes,
           comments: post.comments,
+          exportedComments: exportComments.length,
           shares: post.shares,
           views: post.views,
           timestamp: post.posted_at ?? post.created_at,
           sentiment: detectPostSentiment(
             exportComments.map((comment) => comment.content),
-            post.content ?? ""
+            normalizeExportText(post.content ?? "")
           ),
           commentSentiments,
         };

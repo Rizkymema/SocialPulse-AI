@@ -10,7 +10,7 @@ import type { ExportDataset } from "./exportTypes";
  */
 const escapeCSV = (val: unknown) => {
   if (val === null || val === undefined) return "";
-  let stringVal = String(val);
+  let stringVal = String(val).replace(/\r\n?/g, "\n");
   // replace double quotes with pair of double quotes
   stringVal = stringVal.replace(/"/g, '""');
   // wrap in quotes if has comma, quote, or newline
@@ -34,7 +34,8 @@ export const exportToCSV = (
     "Post URL",
     "Post Content",
     "Post Likes",
-    "Post Comments",
+    "Post Comments (Platform)",
+    "Exported Comment Rows",
     "Post Shares",
     "Post Views",
     "Post Timestamp",
@@ -68,6 +69,7 @@ export const exportToCSV = (
       post.content,
       post.likes,
       post.comments,
+      post.exportedComments,
       post.shares,
       post.views,
       post.timestamp,
@@ -98,7 +100,7 @@ export const exportToCSV = (
     ...rows.map((row) => row.map(escapeCSV).join(",")),
   ].join("\n");
 
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob([`\uFEFF${csvContent}`], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.setAttribute("href", url);
@@ -152,7 +154,7 @@ export const exportToExcel = (
     ["METRIC OVERVIEW", "VALUE"],
     ["Total Collected Posts", totalPosts],
     ["Total Likes", totalLikes],
-    ["Total Comments", totalComments],
+    ["Total Comments (Platform)", totalComments],
     ["Total Exported Comment Rows", exportedComments],
     ["Total Shares", totalShares],
     ["Total Views", totalViews],
@@ -216,7 +218,8 @@ export const exportToExcel = (
     URL: p.url,
     Content: p.content,
     Likes: p.likes,
-    Comments: p.comments,
+    ReportedComments: p.comments,
+    ExportedComments: p.exportedComments,
     Shares: p.shares,
     Views: p.views,
     Engagement: p.likes + p.comments + p.shares,

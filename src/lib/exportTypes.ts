@@ -16,6 +16,7 @@ export interface ExportPost {
   content: string;
   likes: number;
   comments: number;
+  exportedComments: number;
   shares: number;
   views: number;
   timestamp: string;
