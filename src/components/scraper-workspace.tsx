@@ -130,6 +130,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   const [commentsError, setCommentsError] = useState("");
   const [sessionComments, setSessionComments] = useState<Record<string, Comment[]>>({});
   const [exportingFormat, setExportingFormat] = useState<"csv" | "excel" | "pdf" | null>(null);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
   const [deletingPostIds, setDeletingPostIds] = useState<string[]>([]);
 
@@ -210,17 +211,27 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       post.comments > 0 &&
       resolvedComments.length < post.comments
     ) {
-      try {
-        const res = await getPostComments(post.id, { refresh: true });
-        const refreshedComments = dedupeComments(res.comments);
-        if (refreshedComments.length > resolvedComments.length) {
-          resolvedComments = refreshedComments;
-        }
-      } catch (error) {
-        if (!fetchError && resolvedComments.length === 0) {
-          fetchError = error instanceof Error
-            ? error
-            : new Error("Gagal memuat komentar terbaru.");
+      const refreshAttempts =
+        resolvedComments.length <= 5 && post.comments >= 20 ? 2 : 1;
+
+      for (let attempt = 0; attempt < refreshAttempts; attempt += 1) {
+        try {
+          const res = await getPostComments(post.id, { refresh: true });
+          const refreshedComments = dedupeComments(res.comments);
+          if (refreshedComments.length > resolvedComments.length) {
+            resolvedComments = refreshedComments;
+          }
+
+          if (resolvedComments.length >= post.comments) {
+            break;
+          }
+        } catch (error) {
+          if (!fetchError && resolvedComments.length === 0) {
+            fetchError = error instanceof Error
+              ? error
+              : new Error("Gagal memuat komentar terbaru.");
+          }
+          break;
         }
       }
     }
@@ -575,11 +586,11 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       ].join(" ");
 
       if (format === "csv") {
-        exportToCSV(dataset, "hasil_scraping_socialpulse.csv");
+        await exportToCSV(dataset, "hasil_scraping_socialpulse.csv");
       } else if (format === "excel") {
-        exportToExcel(dataset, "Hasil Scraping", "hasil_scraping_socialpulse.xlsx");
+        await exportToExcel(dataset, "Hasil Scraping", "hasil_scraping_socialpulse.xlsx");
       } else {
-        exportToPDF(
+        await exportToPDF(
           dataset,
           "Hasil Scraping",
           summaryText,
@@ -669,16 +680,17 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   const secondaryButtonClass = isEmbeddedLight
     ? "border-slate-200 bg-white text-slate-700 hover:bg-slate-100 hover:border-slate-300 text-xs font-semibold h-9 rounded-xl"
     : "border-zinc-800 hover:bg-zinc-900 text-xs font-semibold h-9 rounded-xl";
-  const dropdownButtonClass = isEmbeddedLight
+  const exportButtonClass = isEmbeddedLight
     ? "border-slate-200 bg-white text-slate-700 hover:bg-slate-100 hover:border-slate-300 text-xs font-semibold flex items-center gap-1.5 h-9 rounded-xl"
     : "border-zinc-800 hover:bg-zinc-900 text-xs font-semibold flex items-center gap-1.5 h-9 rounded-xl";
-  const dropdownMenuClass = isEmbeddedLight
-    ? "absolute right-0 top-9 hidden group-hover:block hover:block bg-white border border-slate-200 rounded-xl p-1.5 shadow-[0_24px_45px_rgba(148,163,184,0.22)] z-40 w-44"
-    : "absolute right-0 top-9 hidden group-hover:block hover:block bg-zinc-950 border border-zinc-800 rounded-xl p-1.5 shadow-2xl z-40 w-44";
-  const dropdownItemClass = isEmbeddedLight
-    ? "flex items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg w-full text-left"
-    : "flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left";
-  const dropdownIconClass = isEmbeddedLight ? "text-slate-400" : "text-zinc-500";
+  const exportDialogClass = isEmbeddedLight
+    ? "max-w-md border-slate-200 bg-white shadow-[0_32px_64px_rgba(148,163,184,0.24)]"
+    : "max-w-md border-zinc-800 bg-[#09090b] shadow-2xl";
+  const exportOptionClass = isEmbeddedLight
+    ? "w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:border-indigo-200 hover:bg-slate-50"
+    : "w-full rounded-xl border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-left transition hover:border-zinc-700 hover:bg-zinc-900";
+  const exportOptionTitleClass = isEmbeddedLight ? "text-sm font-semibold text-slate-900" : "text-sm font-semibold text-white";
+  const exportOptionMetaClass = isEmbeddedLight ? "mt-1 text-xs text-slate-500" : "mt-1 text-xs text-zinc-400";
   const tableCardClass = isEmbeddedLight
     ? "bg-white/88 border-slate-200 overflow-hidden shadow-[0_20px_44px_rgba(148,163,184,0.14)]"
     : "bg-zinc-950/40 border-zinc-900 overflow-hidden";
@@ -736,6 +748,25 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     ? "Tempel URL postingan atau profil publik langsung di halaman ini. Hasil scraping, komentar, pemilihan data, dan export akan masuk ke workspace yang sama tanpa pindah ke halaman kerja terpisah."
     : "Gunakan halaman ini untuk scraping URL postingan atau profil media sosial, melihat hasil yang berhasil diambil, lalu mengunduh hanya data yang dipilih.";
 
+  const exportTargetCount = selectedPosts.length > 0 ? selectedPosts.length : sortedPosts.length;
+  const exportButtonLabel = activeSelectedPostIds.length > 0
+    ? `Unduh Terpilih (${activeSelectedPostIds.length})`
+    : "Unduh Data";
+
+  const handleOpenExportDialog = () => {
+    if (exportTargetCount === 0) {
+      alert("Belum ada data scraping untuk diunduh.");
+      return;
+    }
+
+    setIsExportDialogOpen(true);
+  };
+
+  const handleExportSelection = (format: "csv" | "excel" | "pdf") => {
+    setIsExportDialogOpen(false);
+    void runExport(format);
+  };
+
   return (
     <div className="space-y-6 text-left">
       {!isEmbedded && (
@@ -757,46 +788,18 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
               <Link2 className="h-4 w-4 mr-1" /> Scrape URL
             </Button>
 
-            <div className="relative group shrink-0">
-              <Button
-                variant="outline"
-                className="border-zinc-800 hover:bg-zinc-900 text-xs font-semibold flex items-center gap-1.5"
-              >
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleOpenExportDialog}
+              disabled={exportingFormat !== null}
+              className={`${exportButtonClass} shrink-0`}
+            >
                 <Download className="h-4 w-4" />
                 {activeSelectedPostIds.length > 0
                   ? `Download Terpilih (${activeSelectedPostIds.length})`
                   : "Download Hasil"}
-              </Button>
-              <div className="absolute right-0 top-10 hidden group-hover:block hover:block bg-[#09090b] border border-zinc-800 rounded-xl p-2 shadow-2xl z-40 w-44">
-                <button
-                  type="button"
-                  onClick={() => void runExport("csv")}
-                  disabled={exportingFormat !== null}
-                  className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
-                >
-                  <FileDown className="h-4 w-4 text-zinc-500" />
-                  {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Download CSV"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runExport("excel")}
-                  disabled={exportingFormat !== null}
-                  className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
-                >
-                  <Files className="h-4 w-4 text-zinc-500" />
-                  {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Download Excel"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runExport("pdf")}
-                  disabled={exportingFormat !== null}
-                  className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg w-full text-left"
-                >
-                  <TableProperties className="h-4 w-4 text-zinc-500" />
-                  {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Download PDF"}
-                </button>
-              </div>
-            </div>
+            </Button>
           </div>
         </div>
       )}
@@ -960,44 +963,16 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
               </Button>
 
               {/* Integrated Download Actions Dropdown */}
-              <div className="relative group shrink-0">
-                <Button
-                  variant="outline"
-                  className={dropdownButtonClass}
-                >
-                  <Download className={`h-3.5 w-3.5 ${dropdownIconClass}`} />
-                  Unduh Data
-                </Button>
-                <div className={dropdownMenuClass}>
-                  <button
-                    type="button"
-                    onClick={() => void runExport("csv")}
-                    disabled={exportingFormat !== null}
-                    className={dropdownItemClass}
-                  >
-                    <FileDown className={`h-4 w-4 ${dropdownIconClass}`} />
-                    {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Unduh CSV"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void runExport("excel")}
-                    disabled={exportingFormat !== null}
-                    className={dropdownItemClass}
-                  >
-                    <Files className={`h-4 w-4 ${dropdownIconClass}`} />
-                    {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Unduh Excel"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void runExport("pdf")}
-                    disabled={exportingFormat !== null}
-                    className={dropdownItemClass}
-                  >
-                    <TableProperties className={`h-4 w-4 ${dropdownIconClass}`} />
-                    {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Unduh PDF"}
-                  </button>
-                </div>
-              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleOpenExportDialog}
+                disabled={exportingFormat !== null}
+                className={exportButtonClass}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {exportButtonLabel}
+              </Button>
 
               <Button
                 type="button"
@@ -1249,6 +1224,85 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
           </DialogContent>
         </Dialog>
       )}
+
+      <Dialog isOpen={isExportDialogOpen} onClose={() => setIsExportDialogOpen(false)}>
+        <DialogContent onClose={() => setIsExportDialogOpen(false)} className={exportDialogClass}>
+          <DialogHeader>
+            <DialogTitle className={`flex items-center gap-2 ${commentsDialogTitleClass}`}>
+              <Download className={`h-4 w-4 ${accentTextClass}`} /> Pilih format unduhan
+            </DialogTitle>
+            <DialogDescription>
+              {selectedPosts.length > 0
+                ? `Anda akan mengunduh ${selectedPosts.length} hasil scraping yang dipilih.`
+                : `Anda akan mengunduh ${sortedPosts.length} hasil scraping yang sedang tampil.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => handleExportSelection("csv")}
+              disabled={exportingFormat !== null}
+              className={exportOptionClass}
+            >
+              <div className="flex items-center gap-2">
+                <FileDown className={`h-4 w-4 ${accentTextClass}`} />
+                <span className={exportOptionTitleClass}>
+                  {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Unduh CSV"}
+                </span>
+              </div>
+              <p className={exportOptionMetaClass}>
+                Paling ringan untuk spreadsheet dan audit data cepat.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleExportSelection("excel")}
+              disabled={exportingFormat !== null}
+              className={exportOptionClass}
+            >
+              <div className="flex items-center gap-2">
+                <Files className={`h-4 w-4 ${accentTextClass}`} />
+                <span className={exportOptionTitleClass}>
+                  {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Unduh Excel"}
+                </span>
+              </div>
+              <p className={exportOptionMetaClass}>
+                Format paling rapi untuk komentar lengkap dengan sheet terpisah.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleExportSelection("pdf")}
+              disabled={exportingFormat !== null}
+              className={exportOptionClass}
+            >
+              <div className="flex items-center gap-2">
+                <TableProperties className={`h-4 w-4 ${accentTextClass}`} />
+                <span className={exportOptionTitleClass}>
+                  {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Unduh PDF"}
+                </span>
+              </div>
+              <p className={exportOptionMetaClass}>
+                Ringkasan presentasi. Untuk teks komentar penuh yang paling stabil, gunakan Excel atau CSV.
+              </p>
+            </button>
+          </div>
+
+          <DialogFooter className={commentsFooterClass}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsExportDialogOpen(false)}
+              className={dialogSecondaryButtonClass}
+            >
+              Tutup
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog isOpen={!!commentsPost} onClose={handleCloseComments}>
         <DialogContent onClose={handleCloseComments} className={commentsDialogClass}>

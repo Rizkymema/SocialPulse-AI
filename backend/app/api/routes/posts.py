@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -34,6 +35,57 @@ class CommentsResponse(BaseModel):
     comments: List[CommentItem]
 
 
+def _normalize_comment_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _comment_identity(comment: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(comment.get("id") or ""),
+        str(comment.get("parent") or "root"),
+        str(comment.get("author_id") or comment.get("author") or ""),
+        str(comment.get("timestamp") or ""),
+        _normalize_comment_text(comment.get("text")).casefold(),
+    )
+
+
+def _merge_raw_comments(*comment_groups: list[Any]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+
+    for group in comment_groups:
+        for raw_comment in group or []:
+            if not isinstance(raw_comment, dict):
+                continue
+
+            text = _normalize_comment_text(raw_comment.get("text"))
+            if not text:
+                continue
+
+            comment = {
+                **raw_comment,
+                "text": text,
+                "parent": raw_comment.get("parent") or "root",
+                "like_count": int(raw_comment.get("like_count") or 0),
+            }
+            identity = _comment_identity(comment)
+            if identity in seen:
+                continue
+
+            seen.add(identity)
+            merged.append(comment)
+
+    merged.sort(
+        key=lambda comment: (
+            0 if (comment.get("parent") or "root") == "root" else 1,
+            str(comment.get("parent") or "root"),
+            int(comment.get("timestamp") or 0),
+            _comment_identity(comment),
+        )
+    )
+    return merged
+
+
 def _serialize_comments(row: dict[str, Any], parent: Optional[str] = None) -> list[CommentItem]:
     raw_comments: list = (row.get("raw_data") or {}).get("comments") or []
 
@@ -66,8 +118,28 @@ def _refresh_post_snapshot(post_id: str, row: dict[str, Any]) -> dict[str, Any]:
         return row
 
     scraper = get_scraper(str(platform))
-    raw_data = scraper.scrape(str(url))
+    if "comment_limit" in inspect.signature(scraper.scrape).parameters:
+        raw_data = scraper.scrape(str(url), comment_limit=500)
+    else:
+        raw_data = scraper.scrape(str(url))
+
     normalised = DataNormalizer.normalize(str(platform), raw_data, str(url)).model_dump(mode="json")
+    existing_raw_data = row.get("raw_data") or {}
+    latest_raw_data = normalised.get("raw_data") or {}
+    merged_comments = _merge_raw_comments(
+        latest_raw_data.get("comments") or [],
+        existing_raw_data.get("comments") or [],
+    )
+    normalised["raw_data"] = {
+        **existing_raw_data,
+        **latest_raw_data,
+        "comments": merged_comments,
+    }
+    normalised["comments"] = max(
+        int(row.get("comments") or 0),
+        int(normalised.get("comments") or 0),
+        len(merged_comments),
+    )
     updated_at = datetime.now(timezone.utc).isoformat()
 
     db = get_supabase()
@@ -150,7 +222,7 @@ def get_post_comments(
     db = get_supabase()
     result = (
         db.table("scraped_posts")
-        .select("platform, raw_data, url")
+        .select("platform, raw_data, url, comments")
         .eq("id", post_id)
         .execute()
     )
@@ -162,8 +234,7 @@ def get_post_comments(
     if refresh:
         try:
             refreshed_row = _refresh_post_snapshot(post_id, row)
-            if len(_serialize_comments(refreshed_row)) >= len(_serialize_comments(row)):
-                row = refreshed_row
+            row = refreshed_row
         except Exception as exc:
             logger.warning("Comment refresh failed for post %s: %s", post_id, exc)
 

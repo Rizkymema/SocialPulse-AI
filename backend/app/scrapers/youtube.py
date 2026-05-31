@@ -40,7 +40,10 @@ def _has_metric(value: Any) -> bool:
 
 
 def _build_ydl_opts(
-    *, include_comments: bool, player_client: str | None = None
+    *,
+    include_comments: bool,
+    player_client: str | None = None,
+    comment_limit: int | str | None = None,
 ) -> Dict[str, Any]:
     opts = deepcopy(_BASE_YDL_OPTS)
     youtube_args: Dict[str, Any] = {
@@ -50,7 +53,7 @@ def _build_ydl_opts(
     if include_comments:
         opts["getcomments"] = True
         # Keep inline scrapes bounded so Vercel requests can finish reliably.
-        youtube_args["max_comments"] = ["100"]
+        youtube_args["max_comments"] = [str(comment_limit or 100)]
 
     if player_client:
         youtube_args["player_client"] = [player_client]
@@ -68,7 +71,7 @@ class YouTubeScraper(BaseScraper):
     2. yt-dlp extraction (public video, no auth required)
     """
 
-    def scrape(self, url: str) -> Dict[str, Any]:
+    def scrape(self, url: str, comment_limit: int | str | None = None) -> Dict[str, Any]:
         if self._is_profile_url(url):
             return self._scrape_profile_via_ytdlp(url)
 
@@ -80,7 +83,7 @@ class YouTubeScraper(BaseScraper):
                 logger.warning("YouTube API failed, falling back to yt-dlp: %s", exc)
 
         # Fall back to yt-dlp
-        return self._scrape_via_ytdlp(url)
+        return self._scrape_via_ytdlp(url, comment_limit=comment_limit)
 
     def _is_profile_url(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -144,10 +147,17 @@ class YouTubeScraper(BaseScraper):
 
     # ── yt-dlp ────────────────────────────────────────────────────────────────
     def _extract_with_ytdlp(
-        self, url: str, *, include_comments: bool, player_client: str | None = None
+        self,
+        url: str,
+        *,
+        include_comments: bool,
+        player_client: str | None = None,
+        comment_limit: int | str | None = None,
     ) -> Dict[str, Any]:
         opts = _build_ydl_opts(
-            include_comments=include_comments, player_client=player_client
+            include_comments=include_comments,
+            player_client=player_client,
+            comment_limit=comment_limit,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -298,9 +308,18 @@ class YouTubeScraper(BaseScraper):
         except ValueError:
             return None
 
-    def _scrape_via_ytdlp(self, url: str) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(
+        self,
+        url: str,
+        *,
+        comment_limit: int | str | None = None,
+    ) -> Dict[str, Any]:
         try:
-            info = self._extract_with_ytdlp(url, include_comments=True)
+            info = self._extract_with_ytdlp(
+                url,
+                include_comments=True,
+                comment_limit=comment_limit,
+            )
             self._backfill_missing_engagement(url, info)
 
             # Strip large binary blobs from raw_data, keep comments

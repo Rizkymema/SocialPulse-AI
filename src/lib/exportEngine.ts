@@ -20,10 +20,73 @@ const escapeCSV = (val: unknown) => {
   return stringVal;
 };
 
+const normalizePortableText = (value: unknown) =>
+  String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, " ")
+    .replace(/[\u200B-\u200F\u2060\uFEFF]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+const sanitizePdfText = (value: unknown) =>
+  normalizePortableText(value)
+    .replace(/[^\x20-\x7E\u00A0-\u024F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const canShareFile = (file: File) => {
+  if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
+    return false;
+  }
+
+  const shareNavigator = navigator as Navigator & {
+    canShare?: (data: ShareData) => boolean;
+  };
+
+  if (typeof shareNavigator.canShare === "function") {
+    return shareNavigator.canShare({ files: [file] });
+  }
+
+  return false;
+};
+
+const downloadBlob = async (blob: Blob, filename: string) => {
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    if (typeof File !== "undefined") {
+      const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+      if (canShareFile(file)) {
+        try {
+          await navigator.share({ files: [file], title: filename });
+          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+        }
+      }
+    }
+
+    const link = document.createElement("a");
+    link.setAttribute("href", objectUrl);
+    link.setAttribute("download", filename);
+    link.setAttribute("rel", "noopener noreferrer");
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  }
+};
+
 /**
  * 1. CSV EXPORT
  */
-export const exportToCSV = (
+export const exportToCSV = async (
   dataset: ExportDataset,
   filename: string = "social_pulse_data.csv"
 ) => {
@@ -64,9 +127,9 @@ export const exportToCSV = (
     const postColumns = [
       post.id,
       post.platform.toUpperCase(),
-      post.username,
+      normalizePortableText(post.username),
       post.url,
-      post.content,
+      normalizePortableText(post.content),
       post.likes,
       post.comments,
       post.exportedComments,
@@ -86,8 +149,8 @@ export const exportToCSV = (
     return comments.map((comment) => [
       ...postColumns,
       comment.id,
-      comment.author,
-      comment.content,
+      normalizePortableText(comment.author),
+      normalizePortableText(comment.content),
       comment.likes,
       comment.timestamp,
       comment.parent,
@@ -101,20 +164,13 @@ export const exportToCSV = (
   ].join("\n");
 
   const blob = new Blob([`\uFEFF${csvContent}`], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  link.style.visibility = "hidden";
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  await downloadBlob(blob, filename);
 };
 
 /**
  * 2. EXCEL EXPORT (Multi-sheet)
  */
-export const exportToExcel = (
+export const exportToExcel = async (
   dataset: ExportDataset,
   workspaceName: string,
   filename: string = "social_pulse_data.xlsx"
@@ -214,9 +270,9 @@ export const exportToExcel = (
   const rawPostsData = posts.map((p) => ({
     ID: p.id,
     Platform: p.platform.toUpperCase(),
-    Username: p.username,
+    Username: normalizePortableText(p.username),
     URL: p.url,
-    Content: p.content,
+    Content: normalizePortableText(p.content),
     Likes: p.likes,
     ReportedComments: p.comments,
     ExportedComments: p.exportedComments,
@@ -237,11 +293,11 @@ export const exportToExcel = (
     CommentID: comment.id,
     PostID: comment.postId,
     Platform: comment.postPlatform.toUpperCase(),
-    Username: comment.postUsername,
+    Username: normalizePortableText(comment.postUsername),
     PostURL: comment.postUrl,
     PostTimestamp: comment.postTimestamp,
-    Author: comment.author,
-    Comment: comment.content,
+    Author: normalizePortableText(comment.author),
+    Comment: normalizePortableText(comment.content),
     CommentLikes: comment.likes,
     CommentTimestamp: comment.timestamp,
     Parent: comment.parent,
@@ -253,14 +309,19 @@ export const exportToExcel = (
     : XLSX.utils.aoa_to_sheet([["No comments exported"]]);
   XLSX.utils.book_append_sheet(wb, wsComments, "Collected Comments");
 
-  // Write and Save
-  XLSX.writeFile(wb, filename);
+  const workbookBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  await downloadBlob(
+    new Blob([workbookBuffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    filename
+  );
 };
 
 /**
  * 3. PDF REPORT EXPORT (AI-styled premium document)
  */
-export const exportToPDF = (
+export const exportToPDF = async (
   dataset: ExportDataset,
   workspaceName: string,
   aiSummary: string,
@@ -371,14 +432,14 @@ export const exportToPDF = (
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(colorPrimary[0], colorPrimary[1], colorPrimary[2]);
-  doc.text("🧠 AI COGNITIVE SUMMARY", 20, 108);
+  doc.text("AI COGNITIVE SUMMARY", 20, 108);
 
   doc.setFont("helvetica", "italic");
   doc.setFontSize(9);
   doc.setTextColor(55, 65, 81);
 
   // Split description text into wraps
-  const textLines = doc.splitTextToSize(aiSummary, pageWidth - 40);
+  const textLines = doc.splitTextToSize(sanitizePdfText(aiSummary), pageWidth - 40);
   doc.text(textLines, 20, 115);
 
   // --- 5. Data Table (Top Posts) ---
@@ -389,9 +450,12 @@ export const exportToPDF = (
 
   const tableHeaders = [["Username", "Platform", "Content", "Engagement", "Sentiment"]];
   const tableRows = posts.map((p) => [
-    `@${p.username}`,
+    `@${sanitizePdfText(p.username) || "unknown"}`,
     p.platform.toUpperCase(),
-    p.content.length > 55 ? `${p.content.substring(0, 52)}...` : p.content,
+    (() => {
+      const content = sanitizePdfText(p.content);
+      return content.length > 55 ? `${content.substring(0, 52)}...` : content;
+    })(),
     (p.likes + p.comments + p.shares).toLocaleString(),
     p.sentiment.toUpperCase(),
   ]);
@@ -409,7 +473,7 @@ export const exportToPDF = (
       3: { cellWidth: 25, halign: "right" },
       4: { cellWidth: 25, halign: "center" },
     },
-    styles: { fontSize: 8 },
+    styles: { fontSize: 8, overflow: "linebreak", valign: "top" },
   });
 
   let commentsStartY = ((doc as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 154) + 14;
@@ -433,11 +497,11 @@ export const exportToPDF = (
       startY: commentsStartY + 4,
       head: [["Post", "Author", "Sentiment", "Likes", "Comment"]],
       body: comments.map((comment) => [
-        `@${comment.postUsername}`,
-        comment.author,
+        `@${sanitizePdfText(comment.postUsername) || "unknown"}`,
+        sanitizePdfText(comment.author) || "Anonymous",
         comment.sentiment.toUpperCase(),
         comment.likes.toString(),
-        comment.content,
+        sanitizePdfText(comment.content) || "Komentar tidak dapat dirender di PDF. Gunakan CSV atau Excel untuk teks lengkap.",
       ]),
       theme: "grid",
       headStyles: { fillColor: colorPrimary, fontStyle: "bold" },
@@ -448,7 +512,7 @@ export const exportToPDF = (
         3: { cellWidth: 16, halign: "right" },
         4: { cellWidth: 88 },
       },
-      styles: { fontSize: 7, cellPadding: 2 },
+      styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak", valign: "top" },
       margin: { left: 15, right: 15 },
     });
   }
@@ -463,6 +527,6 @@ export const exportToPDF = (
     doc.text(`Page ${page} of ${totalPages}`, pageWidth - 30, 285);
   }
 
-  // Save
-  doc.save(filename);
+  const pdfBuffer = doc.output("arraybuffer");
+  await downloadBlob(new Blob([pdfBuffer], { type: "application/pdf" }), filename);
 };
