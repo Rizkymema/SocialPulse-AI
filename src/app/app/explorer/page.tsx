@@ -38,6 +38,12 @@ import {
 import { exportToCSV, exportToExcel, exportToPDF } from "@/lib/exportEngine";
 import { useSaaSStore } from "@/store/useSaaSStore";
 
+type CommentsPostState = {
+  id: string;
+  username: string;
+  platform: string;
+};
+
 export default function DataExplorerPage() {
   const { addNotification } = useSaaSStore();
 
@@ -53,14 +59,11 @@ export default function DataExplorerPage() {
   const [apiPosts, setApiPosts] = useState<ScrapedPost[]>([]);
   const [apiLoading, setApiLoading] = useState(true);
 
-  const [commentsPost, setCommentsPost] = useState<{
-    id: string;
-    username: string;
-    platform: string;
-  } | null>(null);
+  const [commentsPost, setCommentsPost] = useState<CommentsPostState | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentsError, setCommentsError] = useState("");
+  const [sessionComments, setSessionComments] = useState<Record<string, Comment[]>>({});
 
   useEffect(() => {
     getPosts({ size: 100 })
@@ -71,9 +74,77 @@ export default function DataExplorerPage() {
 
   const reloadApiPosts = useCallback(() => {
     getPosts({ size: 100 })
-      .then((res) => setApiPosts(res.items))
-      .catch(() => setApiPosts([]));
+      .then((res) =>
+        setApiPosts((current) => {
+          const ephemeralPosts = current.filter((post) => post.id.startsWith("ephemeral-"));
+          const persistedIds = new Set(res.items.map((post) => post.id));
+          return [
+            ...ephemeralPosts.filter((post) => !persistedIds.has(post.id)),
+            ...res.items,
+          ];
+        })
+      )
+      .catch(() => {
+        setApiPosts((current) => current.filter((post) => post.id.startsWith("ephemeral-")));
+      });
   }, []);
+
+  const extractInlineComments = useCallback((post: ScrapedPost): Comment[] => {
+    const rawComments = post.raw_data?.comments;
+    if (!Array.isArray(rawComments)) {
+      return [];
+    }
+
+    return rawComments
+      .map((comment, index) => ({
+        id:
+          typeof comment.id === "string"
+            ? comment.id
+            : `inline-${post.id}-${index}`,
+        text: typeof comment.text === "string" ? comment.text : "",
+        author: typeof comment.author === "string" ? comment.author : undefined,
+        author_id:
+          typeof comment.author_id === "string" ? comment.author_id : undefined,
+        timestamp:
+          typeof comment.timestamp === "number" ? comment.timestamp : undefined,
+        like_count:
+          typeof comment.like_count === "number" ? comment.like_count : 0,
+        is_favorited: Boolean(comment.is_favorited),
+        author_is_uploader: Boolean(comment.author_is_uploader),
+        parent:
+          typeof comment.parent === "string" && comment.parent.length > 0
+            ? comment.parent
+            : "root",
+      }))
+      .filter((comment) => comment.text.length > 0);
+  }, []);
+
+  const upsertScrapedPost = useCallback((post: ScrapedPost) => {
+    setApiPosts((current) => [post, ...current.filter((item) => item.id !== post.id)]);
+
+    const inlineComments = extractInlineComments(post);
+    if (inlineComments.length > 0) {
+      setSessionComments((current) => ({
+        ...current,
+        [post.id]: inlineComments,
+      }));
+    }
+  }, [extractInlineComments]);
+
+  const completeScrape = useCallback((post: ScrapedPost) => {
+    setScrapeStatus("success");
+    setScrapeMessage(
+      `Berhasil mengambil data dari ${post.platform} milik @${post.username ?? "unknown"}.`
+    );
+    addNotification(
+      `Scraping selesai: ${post.username ?? scrapeUrl} (${post.platform})`
+    );
+    upsertScrapedPost(post);
+
+    if (!post.id.startsWith("ephemeral-")) {
+      reloadApiPosts();
+    }
+  }, [addNotification, reloadApiPosts, scrapeUrl, upsertScrapedPost]);
 
   const handleScrapeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,6 +155,18 @@ export default function DataExplorerPage() {
 
     try {
       const job = await submitScrapeJob(scrapeUrl.trim());
+
+      if (job.status === "completed" && job.result) {
+        completeScrape(job.result);
+        return;
+      }
+
+      if (job.status === "failed") {
+        setScrapeStatus("error");
+        setScrapeMessage(job.error_message ?? "Scraping gagal.");
+        return;
+      }
+
       setScrapeMessage(`Job dibuat (${job.platform}). Scraping...`);
 
       const result = await pollScrapeJob(job.job_id, (status) => {
@@ -91,14 +174,7 @@ export default function DataExplorerPage() {
       });
 
       if (result.status === "completed" && result.result) {
-        setScrapeStatus("success");
-        setScrapeMessage(
-          `Berhasil mengambil data dari ${result.result.platform} milik @${result.result.username ?? "unknown"}.`
-        );
-        addNotification(
-          `Scraping selesai: ${result.result.username ?? scrapeUrl} (${result.result.platform})`
-        );
-        reloadApiPosts();
+        completeScrape(result.result);
       } else {
         setScrapeStatus("error");
         setScrapeMessage(result.error_message ?? "Scraping gagal.");
@@ -106,7 +182,11 @@ export default function DataExplorerPage() {
     } catch (err: unknown) {
       setScrapeStatus("error");
       setScrapeMessage(
-        err instanceof Error ? err.message : "Terjadi kesalahan saat scraping."
+        err instanceof Error
+          ? err.message === "Failed to fetch"
+            ? "Backend scraping tidak bisa dijangkau. Coba lagi beberapa saat atau cek deployment backend."
+            : err.message
+          : "Terjadi kesalahan saat scraping."
       );
     }
   };
@@ -118,15 +198,24 @@ export default function DataExplorerPage() {
     setScrapeMessage("");
   };
 
-  const handleViewComments = async (post: {
-    id: string;
-    username: string;
-    platform: string;
-  }) => {
-    setCommentsPost(post);
+  const handleViewComments = async (post: ScrapedPost) => {
+    const nextCommentsPost: CommentsPostState = {
+      id: post.id,
+      username: post.username ?? "unknown",
+      platform: post.platform,
+    };
+
+    setCommentsPost(nextCommentsPost);
     setComments([]);
     setCommentsError("");
     setCommentsLoading(true);
+
+    const inlineComments = sessionComments[post.id] ?? extractInlineComments(post);
+    if (inlineComments.length > 0) {
+      setComments(inlineComments);
+      setCommentsLoading(false);
+      return;
+    }
 
     try {
       const res = await getPostComments(post.id);
@@ -431,13 +520,7 @@ export default function DataExplorerPage() {
                             <ExternalLink className="h-4 w-4" />
                           </a>
                           <button
-                            onClick={() =>
-                              handleViewComments({
-                                id: post.id,
-                                username: post.username ?? "unknown",
-                                platform: post.platform,
-                              })
-                            }
+                            onClick={() => handleViewComments(post)}
                             title="Lihat komentar"
                             className="p-1 rounded hover:bg-indigo-500/10 text-zinc-500 hover:text-indigo-400 transition-colors"
                           >

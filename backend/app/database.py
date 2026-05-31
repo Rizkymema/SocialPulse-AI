@@ -19,7 +19,7 @@ def _build_client() -> Client:
     request.  Replacing the session transport with HTTP/1.1-only avoids the
     issue because HTTP/1.1 reconnects transparently on a dropped connection.
     """
-    client = create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
+    client = create_client(settings.SUPABASE_URL, settings.supabase_key)
 
     # Patch the PostgREST httpx session to disable HTTP/2.
     old_session: httpx.Client = client.postgrest.session

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # ── Supabase (REST API via HTTPS – no direct PostgreSQL port needed) ─────────
     SUPABASE_URL: str = "https://likpsdlhnieltvlmuojp.supabase.co"
     SUPABASE_ANON_KEY: str = "sb_publishable_HeRRiZfXS-DZkWnlFG6bnQ_1WmNlOkZ"
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
+
+    @property
+    def supabase_key(self) -> str:
+        return self.SUPABASE_SERVICE_ROLE_KEY or self.SUPABASE_ANON_KEY
 
     # ── Optional API keys ─────────────────────────────────────────────────────
     YOUTUBE_API_KEY: Optional[str] = None

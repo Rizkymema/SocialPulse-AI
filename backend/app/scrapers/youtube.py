@@ -25,8 +25,8 @@ _YDL_OPTS: Dict[str, Any] = {
     "extractor_args": {
         "youtube": {
             "skip": ["hls", "dash", "translated_subs"],
-            # Fetch semua komentar (tanpa batas); ubah ke "500" jika ingin dibatasi
-            "max_comments": ["all"],
+            # Keep inline scrapes bounded so Vercel requests can finish reliably.
+            "max_comments": ["100"],
         }
     },
 }

@@ -27,15 +27,103 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_write_access_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "row-level security" in message
+        or "401 unauthorized" in message
+        or "42501" in message
+    )
+
+
+async def _scrape_and_normalize(url: str, platform: str) -> Dict[str, Any]:
+    def _blocking_scrape() -> Dict[str, Any]:
+        scraper = get_scraper(platform)
+        return scraper.scrape(url)
+
+    raw_data = await asyncio.get_event_loop().run_in_executor(None, _blocking_scrape)
+    normalised = DataNormalizer.normalize(platform, raw_data, url)
+    return normalised.model_dump(mode="json")
+
+
+def _inline_result(post_id: str, normalised: Dict[str, Any]) -> Dict[str, Any]:
+    now = _now_iso()
+    return {
+        "id": post_id,
+        **normalised,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _job_response(job: dict, result: dict | None = None) -> dict:
+    response = {
+        "job_id": job.get("id"),
+        "url": job.get("url"),
+        "platform": job.get("platform"),
+        "status": job.get("status"),
+        "error_message": job.get("error_message"),
+        "scraped_post_id": job.get("scraped_post_id"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+    }
+    if result is not None:
+        response["result"] = result
+    return response
+
+
+def _load_post_result(db: Any, post_id: str | None) -> dict | None:
+    if not post_id or str(post_id).startswith("ephemeral-"):
+        return None
+
+    post_res = db.table("scraped_posts").select("*").eq("id", post_id).execute()
+    if post_res.data:
+        return post_res.data[0]
+    return None
+
+
+async def _inline_scrape_response(url: str, platform: str) -> dict:
+    job_id = str(uuid.uuid4())
+    now = _now_iso()
+
+    try:
+        normalised = await _scrape_and_normalize(url, platform)
+        post_id = f"ephemeral-{uuid.uuid4()}"
+        result = _inline_result(post_id, normalised)
+        return _job_response(
+            {
+                "id": job_id,
+                "url": url,
+                "platform": platform,
+                "status": "completed",
+                "error_message": None,
+                "scraped_post_id": post_id,
+                "created_at": now,
+                "updated_at": now,
+            },
+            result,
+        )
+    except Exception as exc:
+        logger.error("Inline scrape fallback failed: url=%s error=%s", url, exc)
+        return _job_response(
+            {
+                "id": job_id,
+                "url": url,
+                "platform": platform,
+                "status": "failed",
+                "error_message": str(exc)[:1024],
+                "scraped_post_id": None,
+                "created_at": now,
+                "updated_at": _now_iso(),
+            }
+        )
+
+
 # ── Background scrape task ────────────────────────────────────────────────────
 
 async def _run_scrape(job_id: str, url: str, platform: str) -> None:
     """Run scraping in thread pool, persist to Supabase via REST API."""
     db = get_supabase()
-
-    def _blocking_scrape():
-        scraper = get_scraper(platform)
-        return scraper.scrape(url)
 
     # Mark as processing
     db.table("scrape_jobs").update(
@@ -43,11 +131,7 @@ async def _run_scrape(job_id: str, url: str, platform: str) -> None:
     ).eq("id", job_id).execute()
 
     try:
-        raw_data: Dict[str, Any] = await asyncio.get_event_loop().run_in_executor(
-            None, _blocking_scrape
-        )
-        normalised = DataNormalizer.normalize(platform, raw_data, url)
-        nd = normalised.model_dump(mode="json")
+        nd = await _scrape_and_normalize(url, platform)
 
         # Upsert post (update if URL already exists)
         existing = (
@@ -137,21 +221,30 @@ async def submit_scrape(payload: ScrapeRequest):
             .execute()
         )
         if jobs.data:
-            return _job_response(jobs.data[0])
+            return _job_response(jobs.data[0], _load_post_result(db, post_id))
 
     # Create new job
     now = _now_iso()
     job_id = str(uuid.uuid4())
-    db.table("scrape_jobs").insert(
-        {
-            "id": job_id,
-            "url": url,
-            "platform": platform,
-            "status": "pending",
-            "created_at": now,
-            "updated_at": now,
-        }
-    ).execute()
+    try:
+        db.table("scrape_jobs").insert(
+            {
+                "id": job_id,
+                "url": url,
+                "platform": platform,
+                "status": "pending",
+                "created_at": now,
+                "updated_at": now,
+            }
+        ).execute()
+    except Exception as exc:
+        if _is_write_access_error(exc):
+            logger.warning(
+                "Falling back to inline scrape because scrape_jobs write is blocked: %s",
+                exc,
+            )
+            return await _inline_scrape_response(url, platform)
+        raise
 
     # Vercel Functions do not guarantee background work after the response ends.
     if os.getenv("VERCEL"):
@@ -159,20 +252,23 @@ async def submit_scrape(payload: ScrapeRequest):
 
         latest = db.table("scrape_jobs").select("*").eq("id", job_id).execute()
         if latest.data:
-            return _job_response(latest.data[0])
+            job = latest.data[0]
+            return _job_response(job, _load_post_result(db, job.get("scraped_post_id")))
     else:
         asyncio.create_task(_run_scrape(job_id, url, platform))
 
-    return {
-        "job_id": job_id,
-        "url": url,
-        "platform": platform,
-        "status": "pending",
-        "error_message": None,
-        "scraped_post_id": None,
-        "created_at": now,
-        "updated_at": now,
-    }
+    return _job_response(
+        {
+            "id": job_id,
+            "url": url,
+            "platform": platform,
+            "status": "pending",
+            "error_message": None,
+            "scraped_post_id": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
 
 
 # ── GET /api/scrape/{job_id} ──────────────────────────────────────────────────
@@ -186,29 +282,4 @@ async def get_scrape_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = result.data[0]
-    response = _job_response(job)
-
-    if job.get("status") == "completed" and job.get("scraped_post_id"):
-        post_res = (
-            db.table("scraped_posts")
-            .select("*")
-            .eq("id", job["scraped_post_id"])
-            .execute()
-        )
-        if post_res.data:
-            response["result"] = post_res.data[0]
-
-    return response
-
-
-def _job_response(job: dict) -> dict:
-    return {
-        "job_id": job.get("id"),
-        "url": job.get("url"),
-        "platform": job.get("platform"),
-        "status": job.get("status"),
-        "error_message": job.get("error_message"),
-        "scraped_post_id": job.get("scraped_post_id"),
-        "created_at": job.get("created_at"),
-        "updated_at": job.get("updated_at"),
-    }
+    return _job_response(job, _load_post_result(db, job.get("scraped_post_id")))

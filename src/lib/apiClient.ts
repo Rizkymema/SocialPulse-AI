@@ -16,6 +16,23 @@ export interface ScrapeJob {
   result?: ScrapedPost;
 }
 
+export interface Comment {
+  id?: string;
+  text: string;
+  author?: string;
+  author_id?: string;
+  timestamp?: number;
+  like_count: number;
+  is_favorited: boolean;
+  author_is_uploader: boolean;
+  parent: string; // "root" = top-level, else reply to that comment id
+}
+
+export interface ScrapedPostRawData {
+  comments?: Array<Partial<Comment> & Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
 export interface ScrapedPost {
   id: string;
   url: string;
@@ -29,6 +46,7 @@ export interface ScrapedPost {
   shares: number;
   views: number;
   posted_at?: string;
+  raw_data?: ScrapedPostRawData;
   created_at: string;
   updated_at: string;
 }
@@ -62,6 +80,8 @@ export interface AnalyticsSummary {
   };
 }
 
+export type TopPost = ScrapedPost;
+
 interface AnalyticsSummaryApiResponse {
   total_posts?: number;
   platforms?: Record<string, {
@@ -82,31 +102,6 @@ interface AnalyticsSummaryApiResponse {
   }>;
   engagement?: AnalyticsSummary["engagement"];
   jobs?: AnalyticsSummary["jobs"];
-}
-
-export interface TopPost {
-  id: string;
-  url: string;
-  platform: string;
-  username?: string;
-  content?: string;
-  likes: number;
-  comments: number;
-  shares: number;
-  views: number;
-  posted_at?: string;
-}
-
-export interface Comment {
-  id?: string;
-  text: string;
-  author?: string;
-  author_id?: string;
-  timestamp?: number;
-  like_count: number;
-  is_favorited: boolean;
-  author_is_uploader: boolean;
-  parent: string; // "root" = top-level, else reply to that comment id
 }
 
 export interface CommentsResponse {
