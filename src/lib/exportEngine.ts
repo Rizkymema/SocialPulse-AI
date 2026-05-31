@@ -36,40 +36,10 @@ const sanitizePdfText = (value: unknown) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const canShareFile = (file: File) => {
-  if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
-    return false;
-  }
-
-  const shareNavigator = navigator as Navigator & {
-    canShare?: (data: ShareData) => boolean;
-  };
-
-  if (typeof shareNavigator.canShare === "function") {
-    return shareNavigator.canShare({ files: [file] });
-  }
-
-  return false;
-};
-
 const downloadBlob = async (blob: Blob, filename: string) => {
   const objectUrl = URL.createObjectURL(blob);
 
   try {
-    if (typeof File !== "undefined") {
-      const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
-      if (canShareFile(file)) {
-        try {
-          await navigator.share({ files: [file], title: filename });
-          return;
-        } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") {
-            return;
-          }
-        }
-      }
-    }
-
     const link = document.createElement("a");
     link.setAttribute("href", objectUrl);
     link.setAttribute("download", filename);
