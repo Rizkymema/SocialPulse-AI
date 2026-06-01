@@ -119,6 +119,40 @@ export interface GetPostCommentsOptions {
   refresh?: boolean;
 }
 
+const deriveStoredCommentsCount = (post?: Partial<ScrapedPost>) => {
+  const rawComments = post?.raw_data?.comments;
+  if (!Array.isArray(rawComments)) {
+    return Number(post?.scraped_comments_count ?? 0);
+  }
+
+  const nonEmptyComments = rawComments.filter((comment) => {
+    const text = typeof comment?.text === "string" ? comment.text.trim() : "";
+    return text.length > 0;
+  }).length;
+
+  return Math.max(Number(post?.scraped_comments_count ?? 0), nonEmptyComments);
+};
+
+const normalizeScrapedPost = (post: ScrapedPost): ScrapedPost => {
+  const scrapedCommentsCount = deriveStoredCommentsCount(post);
+  return {
+    ...post,
+    comments: Math.max(Number(post.comments ?? 0), scrapedCommentsCount),
+    scraped_comments_count: scrapedCommentsCount,
+  };
+};
+
+const normalizeScrapeJob = (job: ScrapeJob): ScrapeJob => {
+  if (!job.result) {
+    return job;
+  }
+
+  return {
+    ...job,
+    result: normalizeScrapedPost(job.result),
+  };
+};
+
 // ── Scrape ────────────────────────────────────────────────────────────────────
 export async function submitScrapeJob(url: string): Promise<ScrapeJob> {
   const res = await fetch(`${BASE_URL}/api/scrape`, {
@@ -130,13 +164,13 @@ export async function submitScrapeJob(url: string): Promise<ScrapeJob> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.detail ?? `Scrape failed: ${res.status}`);
   }
-  return res.json();
+  return normalizeScrapeJob(await res.json());
 }
 
 export async function getScrapeJob(jobId: string): Promise<ScrapeJob> {
   const res = await fetch(`${BASE_URL}/api/scrape/${jobId}`);
   if (!res.ok) throw new Error(`Job not found: ${res.status}`);
-  return res.json();
+  return normalizeScrapeJob(await res.json());
 }
 
 /** Poll job hingga completed/failed, timeout 60 detik */
@@ -169,7 +203,11 @@ export async function getPosts(params?: {
   if (params?.size) q.set("size", String(params.size));
   const res = await fetch(`${BASE_URL}/api/posts?${q}`);
   if (!res.ok) throw new Error(`Failed to load posts: ${res.status}`);
-  return res.json();
+  const payload = await res.json() as PostsResponse;
+  return {
+    ...payload,
+    items: (payload.items ?? []).map((post) => normalizeScrapedPost(post)),
+  };
 }
 
 export async function deletePost(postId: string): Promise<{ success: boolean; post_id: string }> {
@@ -228,7 +266,8 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
 export async function getTopPosts(limit = 10): Promise<TopPost[]> {
   const res = await fetch(`${BASE_URL}/api/analytics/top-posts?limit=${limit}`);
   if (!res.ok) throw new Error(`Top posts failed: ${res.status}`);
-  return res.json();
+  const payload = await res.json() as TopPost[];
+  return payload.map((post) => normalizeScrapedPost(post));
 }
 
 // ── Comments ──────────────────────────────────────────────────────────────────

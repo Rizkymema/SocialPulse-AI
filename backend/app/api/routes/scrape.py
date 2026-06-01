@@ -14,6 +14,12 @@ from app.core.normalizer import DataNormalizer
 from app.database import get_supabase
 from app.scrapers import ScraperError, get_scraper
 from app.schemas.scrape import ScrapeRequest
+from app.utils.comments import (
+    comments_from_row,
+    is_missing_scraped_comments_count_error,
+    merge_post_comment_state,
+    strip_scraped_comments_count,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -73,7 +79,7 @@ async def _scrape_and_normalize(url: str, platform: str) -> Dict[str, Any]:
     raw_data = await asyncio.get_event_loop().run_in_executor(None, _blocking_scrape)
     trimmed_raw_data = _trim_large_raw_data(raw_data)
     normalised = DataNormalizer.normalize(platform, trimmed_raw_data, url)
-    return normalised.model_dump(mode="json")
+    return merge_post_comment_state({}, normalised.model_dump(mode="json"))
 
 
 def _inline_result(post_id: str, normalised: Dict[str, Any]) -> Dict[str, Any]:
@@ -108,7 +114,17 @@ def _load_post_result(db: Any, post_id: str | None) -> dict | None:
 
     post_res = db.table("scraped_posts").select("*").eq("id", post_id).execute()
     if post_res.data:
-        return post_res.data[0]
+        row = dict(post_res.data[0])
+        raw_comments = comments_from_row(row)
+        row["scraped_comments_count"] = max(
+            int(row.get("scraped_comments_count") or 0),
+            len(raw_comments),
+        )
+        row["comments"] = max(
+            int(row.get("comments") or 0),
+            row["scraped_comments_count"],
+        )
+        return row
     return None
 
 
@@ -177,23 +193,84 @@ async def _run_scrape(job_id: str, url: str, platform: str) -> None:
 
     try:
         nd = await _scrape_and_normalize(url, platform)
+        latest_comments_count = len(comments_from_row({"raw_data": nd.get("raw_data")}))
 
         # Upsert post (update if URL already exists)
-        existing = (
-            db.table("scraped_posts").select("id").eq("url", url).execute()
-        )
+        try:
+            existing = (
+                db.table("scraped_posts")
+                .select("id, raw_data, comments, scraped_comments_count")
+                .eq("url", url)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not is_missing_scraped_comments_count_error(exc):
+                raise
+
+            logger.warning(
+                "scraped_comments_count column is unavailable while looking up %s; falling back to raw_data-derived counts",
+                url,
+            )
+            existing = (
+                db.table("scraped_posts")
+                .select("id, raw_data, comments")
+                .eq("url", url)
+                .limit(1)
+                .execute()
+            )
         now = _now_iso()
 
         if existing.data:
-            post_id = existing.data[0]["id"]
-            db.table("scraped_posts").update(
-                {**nd, "updated_at": now}
-            ).eq("id", post_id).execute()
+            existing_row = existing.data[0]
+            post_id = existing_row["id"]
+            previous_comments_count = max(
+                int(existing_row.get("scraped_comments_count") or 0),
+                len(comments_from_row(existing_row)),
+            )
+            if (
+                previous_comments_count > 0
+                and latest_comments_count < previous_comments_count
+                and latest_comments_count * 10 <= previous_comments_count * 7
+            ):
+                logger.warning(
+                    "Scrape comment count dropped sharply for %s: latest=%d previous=%d; preserving stored comments via merge",
+                    url,
+                    latest_comments_count,
+                    previous_comments_count,
+                )
+
+            merged_payload = merge_post_comment_state(existing_row, nd)
+            update_payload = {**merged_payload, "updated_at": now}
+            try:
+                db.table("scraped_posts").update(update_payload).eq("id", post_id).execute()
+            except Exception as exc:
+                if not is_missing_scraped_comments_count_error(exc):
+                    raise
+
+                logger.warning(
+                    "scraped_comments_count column is unavailable while updating %s; writing fallback payload without that column",
+                    url,
+                )
+                db.table("scraped_posts").update(
+                    strip_scraped_comments_count(update_payload)
+                ).eq("id", post_id).execute()
         else:
             post_id = str(uuid.uuid4())
-            db.table("scraped_posts").insert(
-                {"id": post_id, **nd, "created_at": now, "updated_at": now}
-            ).execute()
+            insert_payload = {"id": post_id, **nd, "created_at": now, "updated_at": now}
+            try:
+                db.table("scraped_posts").insert(insert_payload).execute()
+            except Exception as exc:
+                if not is_missing_scraped_comments_count_error(exc):
+                    raise
+
+                logger.warning(
+                    "scraped_comments_count column is unavailable while inserting %s; writing fallback payload without that column",
+                    url,
+                )
+                db.table("scraped_posts").insert(
+                    strip_scraped_comments_count(insert_payload)
+                ).execute()
 
         db.table("scrape_jobs").update(
             {

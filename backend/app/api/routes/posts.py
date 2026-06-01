@@ -11,9 +11,63 @@ from pydantic import BaseModel
 from app.core.normalizer import DataNormalizer
 from app.database import get_supabase
 from app.scrapers import get_scraper
+from app.utils.comments import (
+    comments_from_row,
+    hydrate_scraped_comments_count,
+    is_missing_scraped_comments_count_error,
+    merge_post_comment_state,
+    strip_scraped_comments_count,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _load_post_comment_row(post_id: str) -> dict[str, Any] | None:
+    db = get_supabase()
+    try:
+        result = (
+            db.table("scraped_posts")
+            .select("platform, raw_data, url, comments, scraped_comments_count")
+            .eq("id", post_id)
+            .execute()
+        )
+    except Exception as exc:
+        if not is_missing_scraped_comments_count_error(exc):
+            raise
+
+        logger.warning(
+            "scraped_comments_count column is unavailable while loading post %s; falling back to derived counts from raw_data.comments",
+            post_id,
+        )
+        result = (
+            db.table("scraped_posts")
+            .select("platform, raw_data, url, comments")
+            .eq("id", post_id)
+            .execute()
+        )
+
+    if not result.data:
+        return None
+
+    return hydrate_scraped_comments_count(result.data[0])
+
+
+def _update_post_snapshot(post_id: str, payload: dict[str, Any]) -> None:
+    db = get_supabase()
+    try:
+        db.table("scraped_posts").update(payload).eq("id", post_id).execute()
+    except Exception as exc:
+        if not is_missing_scraped_comments_count_error(exc):
+            raise
+
+        logger.warning(
+            "scraped_comments_count column is unavailable while updating post %s; writing fallback payload without that column",
+            post_id,
+        )
+        db.table("scraped_posts").update(
+            strip_scraped_comments_count(payload)
+        ).eq("id", post_id).execute()
 
 
 class CommentItem(BaseModel):
@@ -35,59 +89,8 @@ class CommentsResponse(BaseModel):
     comments: List[CommentItem]
 
 
-def _normalize_comment_text(value: Any) -> str:
-    return " ".join(str(value or "").split()).strip()
-
-
-def _comment_identity(comment: dict[str, Any]) -> tuple[str, str, str, str, str]:
-    return (
-        str(comment.get("id") or ""),
-        str(comment.get("parent") or "root"),
-        str(comment.get("author_id") or comment.get("author") or ""),
-        str(comment.get("timestamp") or ""),
-        _normalize_comment_text(comment.get("text")).casefold(),
-    )
-
-
-def _merge_raw_comments(*comment_groups: list[Any]) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
-
-    for group in comment_groups:
-        for raw_comment in group or []:
-            if not isinstance(raw_comment, dict):
-                continue
-
-            text = _normalize_comment_text(raw_comment.get("text"))
-            if not text:
-                continue
-
-            comment = {
-                **raw_comment,
-                "text": text,
-                "parent": raw_comment.get("parent") or "root",
-                "like_count": int(raw_comment.get("like_count") or 0),
-            }
-            identity = _comment_identity(comment)
-            if identity in seen:
-                continue
-
-            seen.add(identity)
-            merged.append(comment)
-
-    merged.sort(
-        key=lambda comment: (
-            0 if (comment.get("parent") or "root") == "root" else 1,
-            str(comment.get("parent") or "root"),
-            int(comment.get("timestamp") or 0),
-            _comment_identity(comment),
-        )
-    )
-    return merged
-
-
 def _serialize_comments(row: dict[str, Any], parent: Optional[str] = None) -> list[CommentItem]:
-    raw_comments: list = (row.get("raw_data") or {}).get("comments") or []
+    raw_comments = comments_from_row(row)
 
     comment_items = [
         CommentItem(
@@ -124,29 +127,10 @@ def _refresh_post_snapshot(post_id: str, row: dict[str, Any]) -> dict[str, Any]:
         raw_data = scraper.scrape_with_retry(str(url))
 
     normalised = DataNormalizer.normalize(str(platform), raw_data, str(url)).model_dump(mode="json")
-    existing_raw_data = row.get("raw_data") or {}
-    latest_raw_data = normalised.get("raw_data") or {}
-    merged_comments = _merge_raw_comments(
-        latest_raw_data.get("comments") or [],
-        existing_raw_data.get("comments") or [],
-    )
-    normalised["raw_data"] = {
-        **existing_raw_data,
-        **latest_raw_data,
-        "comments": merged_comments,
-    }
-    normalised["comments"] = max(
-        int(row.get("comments") or 0),
-        int(normalised.get("comments") or 0),
-        len(merged_comments),
-    )
-    normalised["scraped_comments_count"] = len(merged_comments)
+    normalised = merge_post_comment_state(row, normalised)
     updated_at = datetime.now(timezone.utc).isoformat()
 
-    db = get_supabase()
-    db.table("scraped_posts").update(
-        {**normalised, "updated_at": updated_at}
-    ).eq("id", post_id).execute()
+    _update_post_snapshot(post_id, {**normalised, "updated_at": updated_at})
 
     return {
         **row,
@@ -221,18 +205,11 @@ def get_post_comments(
     parent: Optional[str] = Query(None),
     refresh: bool = Query(False),
 ):
-    db = get_supabase()
-    result = (
-        db.table("scraped_posts")
-        .select("platform, raw_data, url, comments, scraped_comments_count")
-        .eq("id", post_id)
-        .execute()
-    )
+    row = _load_post_comment_row(post_id)
 
-    if not result.data:
+    if row is None:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    row = result.data[0]
     if refresh:
         try:
             refreshed_row = _refresh_post_snapshot(post_id, row)
@@ -241,9 +218,17 @@ def get_post_comments(
             logger.warning("Comment refresh failed for post %s: %s", post_id, exc)
 
     comment_items = _serialize_comments(row, parent)
+    scraped_comments_count = max(
+        int(row.get("scraped_comments_count") or 0),
+        len(comment_items),
+    )
+    platform_comments_count = max(
+        int(row.get("comments") or 0),
+        scraped_comments_count,
+    )
 
-    response.headers["X-Scraped-Comments-Count"] = str(row.get("scraped_comments_count") or len(comment_items))
-    response.headers["X-Platform-Comments-Count"] = str(row.get("comments") or 0)
+    response.headers["X-Scraped-Comments-Count"] = str(scraped_comments_count)
+    response.headers["X-Platform-Comments-Count"] = str(platform_comments_count)
 
     return CommentsResponse(
         post_id=post_id,

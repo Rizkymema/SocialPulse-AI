@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS scraped_posts (
     -- Engagement metrics
     likes           BIGINT      NOT NULL DEFAULT 0,
     comments        BIGINT      NOT NULL DEFAULT 0,
+    scraped_comments_count BIGINT NOT NULL DEFAULT 0,
     shares          BIGINT      NOT NULL DEFAULT 0,
     views           BIGINT      NOT NULL DEFAULT 0,
 
@@ -44,6 +45,9 @@ CREATE INDEX IF NOT EXISTS ix_scraped_posts_platform_user  ON scraped_posts (pla
 CREATE INDEX IF NOT EXISTS ix_scraped_posts_created_at     ON scraped_posts (created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_scraped_posts_content_trgm
     ON scraped_posts USING GIN (content gin_trgm_ops);
+
+ALTER TABLE scraped_posts
+    ADD COLUMN IF NOT EXISTS scraped_comments_count BIGINT NOT NULL DEFAULT 0;
 
 -- ─── scrape_jobs ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scrape_jobs (

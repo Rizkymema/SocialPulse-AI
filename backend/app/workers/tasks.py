@@ -13,6 +13,7 @@ from app.core.detector import PlatformDetector
 from app.core.normalizer import DataNormalizer
 from app.scrapers import ScraperError, get_scraper
 from app.database import get_sync_session
+from app.utils.comments import comments_from_row, merge_post_comment_state
 
 logger = logging.getLogger(__name__)
 
@@ -72,21 +73,54 @@ def scrape_url_task(self, job_id: str, url: str) -> Dict[str, Any]:
 
         # ── Normalise ─────────────────────────────────────────────────────
         normalised = DataNormalizer.normalize(str(platform), raw_data, url)
+        normalised_payload = merge_post_comment_state(
+            {},
+            normalised.model_dump(exclude_none=False),
+        )
 
         # ── Upsert into scraped_posts ─────────────────────────────────────
         existing = (
             db.query(ScrapedPost).filter(ScrapedPost.url == url).first()
         )
         if existing:
+            existing_snapshot = {
+                "raw_data": existing.raw_data,
+                "comments": existing.comments,
+                "scraped_comments_count": getattr(existing, "scraped_comments_count", 0),
+            }
+            previous_comments_count = max(
+                int(getattr(existing, "scraped_comments_count", 0) or 0),
+                len(comments_from_row(existing_snapshot)),
+            )
+            latest_comments_count = len(
+                comments_from_row({"raw_data": normalised_payload.get("raw_data")})
+            )
+            if (
+                previous_comments_count > 0
+                and latest_comments_count < previous_comments_count
+                and latest_comments_count * 10 <= previous_comments_count * 7
+            ):
+                logger.warning(
+                    "[%s] Scrape comment count dropped sharply for %s: latest=%d previous=%d; preserving stored comments via merge",
+                    job_id,
+                    url,
+                    latest_comments_count,
+                    previous_comments_count,
+                )
+
+            merged_payload = merge_post_comment_state(
+                existing_snapshot,
+                normalised_payload,
+            )
             # Update stale record
-            for field, value in normalised.model_dump(exclude_none=False).items():
+            for field, value in merged_payload.items():
                 setattr(existing, field, value)
             db.commit()
             db.refresh(existing)
             post = existing
             logger.info("[%s] Updated existing post %s", job_id, post.id)
         else:
-            post = ScrapedPost(**normalised.model_dump())
+            post = ScrapedPost(**normalised_payload)
             db.add(post)
             db.commit()
             db.refresh(post)

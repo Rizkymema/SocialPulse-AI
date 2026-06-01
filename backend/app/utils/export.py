@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import List
+from typing import Any, List
+
+from app.utils.comments import comments_from_row
 
 # Columns included in CSV / JSON exports
 _FIELDS = [
@@ -15,6 +17,7 @@ _FIELDS = [
     "likes",
     "comments",
     "scraped_comments_count",
+    "exported_comments_count",
     "shares",
     "views",
     "posted_at",
@@ -30,7 +33,27 @@ _FIELDS = [
 ]
 
 
-def _post_to_dict(post: dict) -> dict:
+def _comment_to_dict(comment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": comment.get("id") or "",
+        "author": comment.get("author") or "",
+        "author_id": comment.get("author_id") or "",
+        "text": comment.get("text") or "",
+        "like_count": int(comment.get("like_count") or 0),
+        "timestamp": comment.get("timestamp") or "",
+        "parent": comment.get("parent") or "root",
+        "is_favorited": bool(comment.get("is_favorited", False)),
+        "author_is_uploader": bool(comment.get("author_is_uploader", False)),
+    }
+
+
+def _post_to_dict(post: dict, exported_comments_count: int) -> dict:
+    platform_comments_count = max(int(post.get("comments") or 0), exported_comments_count)
+    scraped_comments_count = max(
+        int(post.get("scraped_comments_count") or 0),
+        exported_comments_count,
+    )
+
     return {
         "id": str(post.get("id", "")),
         "platform": post.get("platform", ""),
@@ -38,8 +61,9 @@ def _post_to_dict(post: dict) -> dict:
         "username": post.get("username") or "",
         "content": (post.get("content") or "").replace("\n", " "),
         "likes": post.get("likes") or 0,
-        "comments": post.get("comments") or 0,
-        "scraped_comments_count": post.get("scraped_comments_count") or 0,
+        "comments": platform_comments_count,
+        "scraped_comments_count": scraped_comments_count,
+        "exported_comments_count": exported_comments_count,
         "shares": post.get("shares") or 0,
         "views": post.get("views") or 0,
         "posted_at": post.get("posted_at") or "",
@@ -49,14 +73,26 @@ def _post_to_dict(post: dict) -> dict:
     }
 
 
+def _build_export_post(post: dict[str, Any]) -> dict[str, Any]:
+    comment_rows = [_comment_to_dict(comment) for comment in comments_from_row(post)]
+    post_dict = _post_to_dict(post, len(comment_rows))
+    return {
+        **post_dict,
+        "comment_rows": comment_rows,
+    }
+
+
 def posts_to_csv(posts: List[dict]) -> str:
     """Serialise a list of scraped_posts dicts to a UTF-8 CSV string with comments."""
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=_FIELDS, extrasaction="ignore")
     writer.writeheader()
     for post in posts:
-        post_dict = _post_to_dict(post)
-        raw_comments = (post.get("raw_data") or {}).get("comments") or []
+        export_post = _build_export_post(post)
+        post_dict = {
+            key: value for key, value in export_post.items() if key != "comment_rows"
+        }
+        raw_comments = export_post["comment_rows"]
         
         if not raw_comments:
             writer.writerow({
@@ -90,6 +126,7 @@ def posts_to_csv(posts: List[dict]) -> str:
                         "likes": "",
                         "comments": "",
                         "scraped_comments_count": "",
+                        "exported_comments_count": "",
                         "shares": "",
                         "views": "",
                         "posted_at": "",
@@ -110,5 +147,5 @@ def posts_to_csv(posts: List[dict]) -> str:
 
 def posts_to_json(posts: List[dict]) -> str:
     """Serialise a list of scraped_posts dicts to a pretty-printed JSON string."""
-    data = [_post_to_dict(p) for p in posts]
+    data = [_build_export_post(post) for post in posts]
     return json.dumps(data, indent=2, ensure_ascii=False)

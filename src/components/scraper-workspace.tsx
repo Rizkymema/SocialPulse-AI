@@ -50,6 +50,8 @@ type CommentsPostState = {
   id: string;
   username: string;
   platform: string;
+  platformCommentsCount: number;
+  scrapedCommentsCount: number;
 };
 
 type ScraperWorkspaceProps = {
@@ -112,6 +114,20 @@ const sortCommentsForExport = (comments: Comment[]) =>
 
     return getCommentIdentity(left).localeCompare(getCommentIdentity(right));
   });
+
+const getScrapedCommentCountForPost = (post: ScrapedPost) => {
+  const inlineCount = Array.isArray(post.raw_data?.comments)
+    ? post.raw_data.comments.filter((comment) => {
+        const text = typeof comment?.text === "string" ? comment.text.trim() : "";
+        return text.length > 0;
+      }).length
+    : 0;
+
+  return Math.max(post.scraped_comments_count ?? 0, inlineCount);
+};
+
+const mergeCommentSources = (...commentGroups: Comment[][]) =>
+  dedupeComments(commentGroups.flatMap((group) => group));
 
 export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWorkspaceProps) {
   const { addNotification } = useSaaSStore();
@@ -208,13 +224,14 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     options?: { refreshIfIncomplete?: boolean }
   ): Promise<Comment[]> => {
     const isPersistedPost = !post.id.startsWith("ephemeral-");
-    let resolvedComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+    const localComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+    let resolvedComments = localComments;
     let fetchError: Error | null = null;
 
     if (resolvedComments.length === 0 && isPersistedPost) {
       try {
         const res = await getPostComments(post.id);
-        resolvedComments = dedupeComments(res.comments);
+        resolvedComments = mergeCommentSources(res.comments, localComments);
       } catch (error) {
         fetchError = error instanceof Error ? error : new Error("Gagal memuat komentar.");
       }
@@ -232,7 +249,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       for (let attempt = 0; attempt < refreshAttempts; attempt += 1) {
         try {
           const res = await getPostComments(post.id, { refresh: true });
-          const refreshedComments = dedupeComments(res.comments);
+          const refreshedComments = mergeCommentSources(res.comments, localComments, resolvedComments);
           if (refreshedComments.length > resolvedComments.length) {
             resolvedComments = refreshedComments;
           }
@@ -356,10 +373,13 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   };
 
   const handleViewComments = async (post: ScrapedPost) => {
+    const storedCommentsCount = getScrapedCommentCountForPost(post);
     const nextCommentsPost: CommentsPostState = {
       id: post.id,
       username: post.username ?? "unknown",
       platform: post.platform,
+      platformCommentsCount: Math.max(post.comments, storedCommentsCount),
+      scrapedCommentsCount: storedCommentsCount,
     };
 
     setCommentsPost(nextCommentsPost);
@@ -467,12 +487,18 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   };
 
   const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<ExportCommentLoadResult> => {
+    const localComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+    const expectedStoredCommentsCount = Math.max(
+      getScrapedCommentCountForPost(post),
+      localComments.length,
+    );
+
     const isPersistedPost = !post.id.startsWith("ephemeral-");
     if (isPersistedPost) {
       try {
         const res = await getPostComments(post.id, { refresh: false });
         let latestResponse = res;
-        let resolved = dedupeComments(res.comments);
+        let resolved = mergeCommentSources(res.comments, localComments);
         const platformCommentTarget = Math.max(
           post.comments,
           res.platform_comments_count ?? 0,
@@ -480,7 +506,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         if (platformCommentTarget > 0 && resolved.length < platformCommentTarget) {
           const resRefresh = await getPostComments(post.id, { refresh: true });
           latestResponse = resRefresh;
-          resolved = dedupeComments(resRefresh.comments);
+          resolved = mergeCommentSources(resRefresh.comments, localComments, resolved);
         }
         return {
           comments: sortCommentsForExport(resolved),
@@ -490,6 +516,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
             resolved.length,
           ),
           scrapedCommentsCount: Math.max(
+            expectedStoredCommentsCount,
             post.scraped_comments_count ?? 0,
             latestResponse.scraped_comments_count ?? 0,
             resolved.length,
@@ -499,11 +526,18 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         console.warn(`Failed to fetch fresh comments for post ${post.id}`, error);
       }
     }
-    const fallback = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+
+    if (isPersistedPost && localComments.length < expectedStoredCommentsCount) {
+      throw new Error(
+        `Komentar tersimpan untuk post @${post.username ?? "unknown"} belum bisa dimuat lengkap dari backend. Jalankan migration database lalu coba export lagi.`
+      );
+    }
+
+    const fallback = localComments;
     return {
       comments: sortCommentsForExport(fallback),
       platformCommentsCount: Math.max(post.comments, fallback.length),
-      scrapedCommentsCount: Math.max(post.scraped_comments_count ?? 0, fallback.length),
+      scrapedCommentsCount: Math.max(expectedStoredCommentsCount, fallback.length),
     };
   }, [extractInlineComments, sessionComments]);
 
@@ -1120,6 +1154,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
               {!apiLoading &&
                 sortedPosts.map((post) => {
                   const engagement = post.likes + post.comments + post.shares;
+                  const scrapedCommentsCount = getScrapedCommentCountForPost(post);
 
                   return (
                     <tr key={post.id} className={tableRowClass}>
@@ -1172,7 +1207,14 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
                         </p>
                       </td>
                       <td className="px-6 py-4 text-right font-medium align-top">
-                        {post.comments.toLocaleString()}
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={tablePrimaryTextClass}>
+                            {post.comments.toLocaleString()} platform
+                          </span>
+                          <span className={`text-[10px] ${tableMutedTextClass}`}>
+                            {scrapedCommentsCount.toLocaleString()} tersimpan
+                          </span>
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right font-medium align-top">
                         <div className="flex flex-col items-end">
@@ -1424,7 +1466,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
                 ? "Memuat komentar dari database..."
                 : commentsError
                 ? commentsError
-                : `${comments.length} komentar ditemukan • Positif ${activeCommentSentiments.positive} • Netral ${activeCommentSentiments.neutral} • Negatif ${activeCommentSentiments.negative}`}
+                : `${comments.length} komentar tersimpan • Platform ${commentsPost?.platformCommentsCount ?? comments.length} • Positif ${activeCommentSentiments.positive} • Netral ${activeCommentSentiments.neutral} • Negatif ${activeCommentSentiments.negative}`}
             </DialogDescription>
           </DialogHeader>
 

@@ -32,6 +32,7 @@ class ScrapedPost(Base):
     # Engagement metrics
     likes: Mapped[int] = mapped_column(BigInteger, default=0)
     comments: Mapped[int] = mapped_column(BigInteger, default=0)
+    scraped_comments_count: Mapped[int] = mapped_column(BigInteger, default=0)
     shares: Mapped[int] = mapped_column(BigInteger, default=0)
     views: Mapped[int] = mapped_column(BigInteger, default=0)
 
