@@ -48,6 +48,7 @@ class PostResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     likes: int = 0
     comments: int = 0
+    scraped_comments_count: int = 0
     shares: int = 0
     views: int = 0
     posted_at: Optional[datetime] = None
@@ -78,6 +79,7 @@ class NormalisedPost(BaseModel):
     thumbnail_url: Optional[str] = None
     likes: int = 0
     comments: int = 0
+    scraped_comments_count: int = 0
     shares: int = 0
     views: int = 0
     posted_at: Optional[datetime] = None

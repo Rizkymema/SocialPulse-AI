@@ -74,6 +74,8 @@ class DataNormalizer:
     # ── YouTube ───────────────────────────────────────────────────────────────
     @staticmethod
     def _normalize_youtube(raw: Dict[str, Any], url: str) -> NormalisedPost:
+        comments_list = raw.get("comments") or []
+        platform_count = _safe_int(raw.get("comment_count"))
         return NormalisedPost(
             url=url,
             platform=Platform.YOUTUBE,
@@ -82,7 +84,8 @@ class DataNormalizer:
             content=DataNormalizer._pick_content(raw, "title", "description"),
             thumbnail_url=raw.get("thumbnail"),
             likes=_safe_int(raw.get("like_count")),
-            comments=_safe_int(raw.get("comment_count")),
+            comments=max(platform_count, len(comments_list)),
+            scraped_comments_count=len(comments_list),
             shares=0,
             views=_safe_int(raw.get("view_count")),
             posted_at=_parse_timestamp(raw.get("upload_date") or raw.get("timestamp")),
@@ -92,6 +95,8 @@ class DataNormalizer:
     # ── TikTok ────────────────────────────────────────────────────────────────
     @staticmethod
     def _normalize_tiktok(raw: Dict[str, Any], url: str) -> NormalisedPost:
+        comments_list = raw.get("comments") or []
+        platform_count = _safe_int(raw.get("comment_count"))
         return NormalisedPost(
             url=url,
             platform=Platform.TIKTOK,
@@ -100,7 +105,8 @@ class DataNormalizer:
             content=DataNormalizer._pick_content(raw, "title", "description"),
             thumbnail_url=raw.get("thumbnail") or raw.get("thumbnail_url"),
             likes=_safe_int(raw.get("like_count") or raw.get("digg_count")),
-            comments=_safe_int(raw.get("comment_count")),
+            comments=max(platform_count, len(comments_list)),
+            scraped_comments_count=len(comments_list),
             shares=_safe_int(raw.get("repost_count") or raw.get("share_count")),
             views=_safe_int(raw.get("view_count") or raw.get("play_count")),
             posted_at=_parse_timestamp(raw.get("timestamp") or raw.get("upload_date")),
@@ -110,6 +116,8 @@ class DataNormalizer:
     # ── Instagram ─────────────────────────────────────────────────────────────
     @staticmethod
     def _normalize_instagram(raw: Dict[str, Any], url: str) -> NormalisedPost:
+        comments_list = raw.get("comments") or []
+        platform_count = _safe_int(raw.get("comment_count"))
         return NormalisedPost(
             url=url,
             platform=Platform.INSTAGRAM,
@@ -118,7 +126,8 @@ class DataNormalizer:
             content=DataNormalizer._pick_content(raw, "description", "title", "caption"),
             thumbnail_url=raw.get("thumbnail") or raw.get("thumbnail_url"),
             likes=_safe_int(raw.get("like_count")),
-            comments=_safe_int(raw.get("comment_count")),
+            comments=max(platform_count, len(comments_list)),
+            scraped_comments_count=len(comments_list),
             shares=0,
             views=_safe_int(raw.get("view_count")),
             posted_at=_parse_timestamp(raw.get("timestamp") or raw.get("upload_date")),
@@ -128,6 +137,8 @@ class DataNormalizer:
     # ── Facebook ──────────────────────────────────────────────────────────────
     @staticmethod
     def _normalize_facebook(raw: Dict[str, Any], url: str) -> NormalisedPost:
+        comments_list = raw.get("comments") or []
+        platform_count = _safe_int(raw.get("comment_count"))
         return NormalisedPost(
             url=url,
             platform=Platform.FACEBOOK,
@@ -136,7 +147,8 @@ class DataNormalizer:
             content=DataNormalizer._pick_content(raw, "description", "title", "message"),
             thumbnail_url=raw.get("thumbnail") or raw.get("thumbnail_url"),
             likes=_safe_int(raw.get("like_count")),
-            comments=_safe_int(raw.get("comment_count")),
+            comments=max(platform_count, len(comments_list)),
+            scraped_comments_count=len(comments_list),
             shares=_safe_int(raw.get("repost_count")),
             views=_safe_int(raw.get("view_count")),
             posted_at=_parse_timestamp(raw.get("timestamp") or raw.get("upload_date")),
@@ -148,6 +160,8 @@ class DataNormalizer:
     def _normalize_generic(
         raw: Dict[str, Any], url: str, platform: str
     ) -> NormalisedPost:
+        comments_list = raw.get("comments") or []
+        platform_count = _safe_int(raw.get("comment_count"))
         return NormalisedPost(
             url=url,
             platform=platform,
@@ -156,7 +170,8 @@ class DataNormalizer:
             content=raw.get("title") or raw.get("description", ""),
             thumbnail_url=raw.get("thumbnail"),
             likes=_safe_int(raw.get("like_count")),
-            comments=_safe_int(raw.get("comment_count")),
+            comments=max(platform_count, len(comments_list)),
+            scraped_comments_count=len(comments_list),
             shares=_safe_int(raw.get("repost_count")),
             views=_safe_int(raw.get("view_count")),
             posted_at=_parse_timestamp(raw.get("timestamp")),

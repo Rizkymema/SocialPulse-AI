@@ -17,6 +17,7 @@ export interface ExportPost {
   likes: number;
   comments: number;
   exportedComments: number;
+  scrapedCommentsCount: number;
   shares: number;
   views: number;
   timestamp: string;

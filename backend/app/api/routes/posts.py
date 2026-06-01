@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.core.normalizer import DataNormalizer
@@ -118,10 +118,10 @@ def _refresh_post_snapshot(post_id: str, row: dict[str, Any]) -> dict[str, Any]:
         return row
 
     scraper = get_scraper(str(platform))
-    if "comment_limit" in inspect.signature(scraper.scrape).parameters:
-        raw_data = scraper.scrape(str(url), comment_limit=500)
+    if "comment_limit" in inspect.signature(scraper.scrape_with_retry).parameters:
+        raw_data = scraper.scrape_with_retry(str(url), comment_limit=500)
     else:
-        raw_data = scraper.scrape(str(url))
+        raw_data = scraper.scrape_with_retry(str(url))
 
     normalised = DataNormalizer.normalize(str(platform), raw_data, str(url)).model_dump(mode="json")
     existing_raw_data = row.get("raw_data") or {}
@@ -140,6 +140,7 @@ def _refresh_post_snapshot(post_id: str, row: dict[str, Any]) -> dict[str, Any]:
         int(normalised.get("comments") or 0),
         len(merged_comments),
     )
+    normalised["scraped_comments_count"] = len(merged_comments)
     updated_at = datetime.now(timezone.utc).isoformat()
 
     db = get_supabase()
@@ -216,13 +217,14 @@ def delete_post(post_id: str):
 )
 def get_post_comments(
     post_id: str,
+    response: Response,
     parent: Optional[str] = Query(None),
     refresh: bool = Query(False),
 ):
     db = get_supabase()
     result = (
         db.table("scraped_posts")
-        .select("platform, raw_data, url, comments")
+        .select("platform, raw_data, url, comments, scraped_comments_count")
         .eq("id", post_id)
         .execute()
     )
@@ -239,6 +241,9 @@ def get_post_comments(
             logger.warning("Comment refresh failed for post %s: %s", post_id, exc)
 
     comment_items = _serialize_comments(row, parent)
+
+    response.headers["X-Scraped-Comments-Count"] = str(row.get("scraped_comments_count") or len(comment_items))
+    response.headers["X-Platform-Comments-Count"] = str(row.get("comments") or 0)
 
     return CommentsResponse(
         post_id=post_id,

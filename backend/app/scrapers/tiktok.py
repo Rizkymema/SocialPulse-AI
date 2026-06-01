@@ -22,7 +22,35 @@ _YDL_OPTS: Dict[str, Any] = {
     "ignore_no_formats_error": True,
     # Enable comment extraction (yt-dlp has partial TikTok support)
     "getcomments": True,
+    "sleep_interval": 2,
+    "max_sleep_interval": 5,
+    "http_headers": {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36"
+        ),
+    },
 }
+
+# User-Agent rotation for retries
+_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/18.4 Safari/605.1.15"
+    ),
+    (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/18.4 Mobile/15E148 Safari/604.1"
+    ),
+]
 
 _TIKTOK_OEMBED = "https://www.tiktok.com/oembed"
 
@@ -53,7 +81,7 @@ class TikTokScraper(BaseScraper):
             re.search(r"^/@[\w.\-]+/?$", parsed.path, re.IGNORECASE)
         )
 
-    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200, ua_index: int = 0) -> Dict[str, Any]:
         try:
             from copy import deepcopy
             opts = deepcopy(_YDL_OPTS)
@@ -62,6 +90,9 @@ class TikTokScraper(BaseScraper):
                     "max_comments": [str(comment_limit or 200)],
                 }
             }
+            # Rotate user-agent on retries
+            if ua_index < len(_USER_AGENTS):
+                opts["http_headers"]["User-Agent"] = _USER_AGENTS[ua_index]
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
@@ -69,26 +100,14 @@ class TikTokScraper(BaseScraper):
                 info.pop("formats", None)
                 info.pop("thumbnails", None)
                 info["_source"] = "yt_dlp"
-                # Normalize comments
+                # Use unified comment normalisation
                 raw_comments = info.get("comments") or []
-                info["comments"] = [
-                    {
-                        "id": c.get("id"),
-                        "text": c.get("text", ""),
-                        "author": c.get("author"),
-                        "author_id": c.get("author_id"),
-                        "timestamp": c.get("timestamp"),
-                        "like_count": c.get("like_count", 0),
-                        "is_favorited": c.get("is_favorited", False),
-                        "author_is_uploader": c.get("author_is_uploader", False),
-                        "parent": c.get("parent", "root"),
-                    }
-                    for c in raw_comments
-                    if c.get("text")
-                ]
+                info["comments"] = self.normalize_comment_list(raw_comments)
                 logger.info(
-                    "TikTok scrape complete: %d comments collected",
+                    "TikTok scrape: %d comments collected (reported %s) for %s",
                     len(info["comments"]),
+                    info.get("comment_count", "?"),
+                    url,
                 )
                 return info
         except yt_dlp.utils.DownloadError as exc:

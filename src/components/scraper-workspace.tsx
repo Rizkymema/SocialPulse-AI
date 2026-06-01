@@ -130,6 +130,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   const [commentsError, setCommentsError] = useState("");
   const [sessionComments, setSessionComments] = useState<Record<string, Comment[]>>({});
   const [exportingFormat, setExportingFormat] = useState<"csv" | "excel" | "pdf" | null>(null);
+  const [exportProgress, setExportProgress] = useState<string>("");
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
   const [deletingPostIds, setDeletingPostIds] = useState<string[]>([]);
@@ -442,75 +443,92 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   };
 
   const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<Comment[]> => {
-    const commentsForExport = await loadBestAvailableComments(post, {
-      refreshIfIncomplete: true,
-    });
+    const isPersistedPost = !post.id.startsWith("ephemeral-");
+    if (isPersistedPost) {
+      try {
+        const res = await getPostComments(post.id, { refresh: false });
+        let resolved = dedupeComments(res.comments);
+        if (post.comments > 0 && resolved.length < post.comments) {
+          const resRefresh = await getPostComments(post.id, { refresh: true });
+          resolved = dedupeComments(resRefresh.comments);
+        }
+        return sortCommentsForExport(resolved);
+      } catch (error) {
+        console.warn(`Failed to fetch fresh comments for post ${post.id}`, error);
+      }
+    }
+    const fallback = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+    return sortCommentsForExport(fallback);
+  }, [extractInlineComments, sessionComments]);
 
-    return sortCommentsForExport(commentsForExport);
-  }, [loadBestAvailableComments]);
+  const buildExportDataset = useCallback(async (
+    posts: ScrapedPost[],
+    onProgress?: (current: number, total: number) => void
+  ): Promise<ExportDataset> => {
+    const exportPosts: ExportPost[] = [];
+    const exportComments: ExportComment[] = [];
 
-  const buildExportDataset = useCallback(async (posts: ScrapedPost[]): Promise<ExportDataset> => {
-    const payloads = await Promise.all(
-      posts.map(async (post) => {
-        const loadedComments = await loadCommentsForExport(post);
+    for (let i = 0; i < posts.length; i++) {
+      const post = posts[i];
+      onProgress?.(i + 1, posts.length);
 
-        const exportComments: ExportComment[] = loadedComments
-          .map((comment, index) => {
-            const content = normalizeExportText(comment.text);
+      const loadedComments = await loadCommentsForExport(post);
+      const postComments: ExportComment[] = loadedComments
+        .map((comment, index) => {
+          const content = normalizeExportText(comment.text);
 
-            return {
-              id: comment.id ?? `${post.id}-comment-${index + 1}`,
-              postId: post.id,
-              postPlatform: post.platform as ExportPost["platform"],
-              postUrl: post.url,
-              postUsername: normalizeExportText(post.username ?? "unknown") || "unknown",
-              postTimestamp: post.posted_at ?? post.created_at,
-              author: normalizeExportText(comment.author ?? "Anonymous") || "Anonymous",
-              content,
-              likes: comment.like_count,
-              timestamp:
-                typeof comment.timestamp === "number"
-                  ? new Date(comment.timestamp * 1000).toISOString()
-                  : post.posted_at ?? post.created_at,
-              parent: comment.parent,
-              sentiment: detectSentiment(content),
-            };
-          })
-          .filter((comment) => comment.content.length > 0);
+          return {
+            id: comment.id ?? `${post.id}-comment-${index + 1}`,
+            postId: post.id,
+            postPlatform: post.platform as ExportPost["platform"],
+            postUrl: post.url,
+            postUsername: normalizeExportText(post.username ?? "unknown") || "unknown",
+            postTimestamp: post.posted_at ?? post.created_at,
+            author: normalizeExportText(comment.author ?? "Anonymous") || "Anonymous",
+            content,
+            likes: comment.like_count,
+            timestamp:
+              typeof comment.timestamp === "number"
+                ? new Date(comment.timestamp * 1000).toISOString()
+                : post.posted_at ?? post.created_at,
+            parent: comment.parent,
+            sentiment: detectSentiment(content),
+          };
+        })
+        .filter((comment) => comment.content.length > 0);
 
-        const commentSentiments = summarizeSentiments(
-          exportComments.map((comment) => comment.sentiment)
-        );
+      exportComments.push(...postComments);
 
-        const exportPost: ExportPost = {
-          id: post.id,
-          platform: post.platform as ExportPost["platform"],
-          url: post.url,
-          username: normalizeExportText(post.username ?? "unknown") || "unknown",
-          content: normalizeExportText(post.content ?? ""),
-          likes: post.likes,
-          comments: post.comments,
-          exportedComments: exportComments.length,
-          shares: post.shares,
-          views: post.views,
-          timestamp: post.posted_at ?? post.created_at,
-          sentiment: detectPostSentiment(
-            exportComments.map((comment) => comment.content),
-            normalizeExportText(post.content ?? "")
-          ),
-          commentSentiments,
-        };
+      const commentSentiments = summarizeSentiments(
+        postComments.map((comment) => comment.sentiment)
+      );
 
-        return {
-          post: exportPost,
-          comments: exportComments,
-        };
-      })
-    );
+      const exportPost: ExportPost = {
+        id: post.id,
+        platform: post.platform as ExportPost["platform"],
+        url: post.url,
+        username: normalizeExportText(post.username ?? "unknown") || "unknown",
+        content: normalizeExportText(post.content ?? ""),
+        likes: post.likes,
+        comments: post.comments,
+        exportedComments: postComments.length,
+        scrapedCommentsCount: post.scraped_comments_count ?? postComments.length,
+        shares: post.shares,
+        views: post.views,
+        timestamp: post.posted_at ?? post.created_at,
+        sentiment: detectPostSentiment(
+          postComments.map((comment) => comment.content),
+          normalizeExportText(post.content ?? "")
+        ),
+        commentSentiments,
+      };
+
+      exportPosts.push(exportPost);
+    }
 
     return {
-      posts: payloads.map((item) => item.post),
-      comments: payloads.flatMap((item) => item.comments),
+      posts: exportPosts,
+      comments: exportComments,
     };
   }, [loadCommentsForExport]);
 
@@ -576,8 +594,13 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     }
 
     setExportingFormat(format);
+    setExportProgress(`Mulai mempersiapkan ekspor ${format.toUpperCase()}...`);
     try {
-      const dataset = await buildExportDataset(targetPosts);
+      const dataset = await buildExportDataset(targetPosts, (current, total) => {
+        setExportProgress(`Mengambil komentar untuk postingan ${current} dari ${total}...`);
+      });
+      setExportProgress(`Membangun file ${format.toUpperCase()}...`);
+
       const summaryText = [
         `Export ${dataset.posts.length} postingan dengan ${dataset.comments.length} komentar hasil scraping.`,
         `Komentar positif: ${dataset.comments.filter((comment) => comment.sentiment === "positive").length}.`,
@@ -598,9 +621,25 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         );
       }
 
+      const totalPlatformComments = dataset.posts.reduce((sum, p) => sum + p.comments, 0);
+      const totalExportedComments = dataset.comments.length;
+      let coverageLabel = "";
+      if (totalPlatformComments > 0) {
+        const pct = ((totalExportedComments / totalPlatformComments) * 100).toFixed(1);
+        coverageLabel = `(${pct}% coverage)`;
+      }
+
       addNotification(
-        `Berhasil mengunduh ${dataset.posts.length} postingan dan ${dataset.comments.length} komentar ke ${format.toUpperCase()}.`
+        `Berhasil mengunduh ${dataset.posts.length} postingan dengan ${totalExportedComments}/${totalPlatformComments} komentar ${coverageLabel} ke ${format.toUpperCase()}.`
       );
+
+      if (totalPlatformComments > 0 && (totalPlatformComments - totalExportedComments) / totalPlatformComments > 0.20) {
+        alert(
+          `Catatan: Beberapa komentar tidak dapat diambil dari platform karena rate limit atau proteksi privasi. Coverage ekspor adalah ${( (totalExportedComments / totalPlatformComments) * 100 ).toFixed(1)}%.`
+        );
+      }
+
+      setIsExportDialogOpen(false);
     } catch (error) {
       alert(
         error instanceof Error
@@ -609,6 +648,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       );
     } finally {
       setExportingFormat(null);
+      setExportProgress("");
     }
   };
 
@@ -1238,63 +1278,72 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => handleExportSelection("csv")}
-              disabled={exportingFormat !== null}
-              className={exportOptionClass}
-            >
-              <div className="flex items-center gap-2">
-                <FileDown className={`h-4 w-4 ${accentTextClass}`} />
-                <span className={exportOptionTitleClass}>
-                  {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Unduh CSV"}
-                </span>
-              </div>
-              <p className={exportOptionMetaClass}>
-                Paling ringan untuk spreadsheet dan audit data cepat.
-              </p>
-            </button>
+          {exportingFormat !== null ? (
+            <div className="py-8 flex flex-col items-center justify-center space-y-4">
+              <Loader2 className={`h-8 w-8 animate-spin ${accentTextClass}`} />
+              <p className={`text-sm font-semibold ${tablePrimaryTextClass}`}>{exportProgress}</p>
+              <p className={`text-xs ${tableMutedTextClass}`}>Mohon tunggu sebentar, kami sedang memproses data langsung dari platform.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => handleExportSelection("csv")}
+                disabled={exportingFormat !== null}
+                className={exportOptionClass}
+              >
+                <div className="flex items-center gap-2">
+                  <FileDown className={`h-4 w-4 ${accentTextClass}`} />
+                  <span className={exportOptionTitleClass}>
+                    {exportingFormat === "csv" ? "Menyiapkan CSV..." : "Unduh CSV"}
+                  </span>
+                </div>
+                <p className={exportOptionMetaClass}>
+                  Paling ringan untuk spreadsheet dan audit data cepat.
+                </p>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleExportSelection("excel")}
-              disabled={exportingFormat !== null}
-              className={exportOptionClass}
-            >
-              <div className="flex items-center gap-2">
-                <Files className={`h-4 w-4 ${accentTextClass}`} />
-                <span className={exportOptionTitleClass}>
-                  {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Unduh Excel"}
-                </span>
-              </div>
-              <p className={exportOptionMetaClass}>
-                Format paling rapi untuk komentar lengkap dengan sheet terpisah.
-              </p>
-            </button>
+              <button
+                type="button"
+                onClick={() => handleExportSelection("excel")}
+                disabled={exportingFormat !== null}
+                className={exportOptionClass}
+              >
+                <div className="flex items-center gap-2">
+                  <Files className={`h-4 w-4 ${accentTextClass}`} />
+                  <span className={exportOptionTitleClass}>
+                    {exportingFormat === "excel" ? "Menyiapkan Excel..." : "Unduh Excel"}
+                  </span>
+                </div>
+                <p className={exportOptionMetaClass}>
+                  Format paling rapi untuk komentar lengkap dengan sheet terpisah.
+                </p>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleExportSelection("pdf")}
-              disabled={exportingFormat !== null}
-              className={exportOptionClass}
-            >
-              <div className="flex items-center gap-2">
-                <TableProperties className={`h-4 w-4 ${accentTextClass}`} />
-                <span className={exportOptionTitleClass}>
-                  {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Unduh PDF"}
-                </span>
-              </div>
-              <p className={exportOptionMetaClass}>
-                Ringkasan presentasi. Untuk teks komentar penuh yang paling stabil, gunakan Excel atau CSV.
-              </p>
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => handleExportSelection("pdf")}
+                disabled={exportingFormat !== null}
+                className={exportOptionClass}
+              >
+                <div className="flex items-center gap-2">
+                  <TableProperties className={`h-4 w-4 ${accentTextClass}`} />
+                  <span className={exportOptionTitleClass}>
+                    {exportingFormat === "pdf" ? "Menyiapkan PDF..." : "Unduh PDF"}
+                  </span>
+                </div>
+                <p className={exportOptionMetaClass}>
+                  Ringkasan presentasi. Untuk teks komentar penuh yang paling stabil, gunakan Excel atau CSV.
+                </p>
+              </button>
+            </div>
+          )}
 
           <DialogFooter className={commentsFooterClass}>
             <Button
               type="button"
               variant="outline"
+              disabled={exportingFormat !== null}
               onClick={() => setIsExportDialogOpen(false)}
               className={dialogSecondaryButtonClass}
             >

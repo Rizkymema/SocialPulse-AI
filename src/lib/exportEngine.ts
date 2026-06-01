@@ -298,6 +298,30 @@ export const exportToExcel = async (
     : XLSX.utils.aoa_to_sheet([["No comments exported"]]);
   XLSX.utils.book_append_sheet(wb, wsComments, "Collected Comments");
 
+  // --- Sheet 4: Data Integrity Summary ---
+  const integrityData = [
+    ["POST ID", "PLATFORM", "USERNAME", "COMMENTS (PLATFORM)", "COMMENTS (EXPORTED)", "COVERAGE RATE", "STATUS"],
+    ...posts.map((p) => {
+      const coverage = p.comments > 0 ? (p.exportedComments / p.comments) : 1;
+      const coveragePct = `${Math.round(coverage * 100)}%`;
+      let status = "Complete";
+      if (p.comments > 0 && coverage < 0.8) {
+        status = "Partial (Rate Limited)";
+      }
+      return [
+        p.id,
+        p.platform.toUpperCase(),
+        p.username,
+        p.comments,
+        p.exportedComments,
+        coveragePct,
+        status
+      ];
+    })
+  ];
+  const wsIntegrity = XLSX.utils.aoa_to_sheet(integrityData);
+  XLSX.utils.book_append_sheet(wb, wsIntegrity, "Data Integrity Summary");
+
   const workbookBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
   await downloadBlob(
     new Blob([workbookBuffer], {

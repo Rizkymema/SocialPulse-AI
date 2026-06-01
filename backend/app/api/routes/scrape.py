@@ -36,16 +36,48 @@ def _is_write_access_error(exc: Exception) -> bool:
     )
 
 
+import json
+
+def _trim_large_raw_data(raw: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        raw_str = json.dumps(raw)
+    except Exception:
+        return raw
+
+    if len(raw_str) <= 5 * 1024 * 1024:
+        return raw
+
+    logger.warning("raw_data size exceeds 5MB (%d bytes), trimming non-essential fields...", len(raw_str))
+    trimmed = dict(raw)
+    discard_keys = ["formats", "thumbnails", "requested_formats", "automatic_captions", "subtitles", "http_headers"]
+    for k in discard_keys:
+        trimmed.pop(k, None)
+
+    try:
+        raw_str = json.dumps(trimmed)
+    except Exception:
+        return trimmed
+
+    if len(raw_str) > 5 * 1024 * 1024:
+        for k, v in list(trimmed.items()):
+            if k in ("comments", "id", "url", "webpage_url", "shortcode"):
+                continue
+            if isinstance(v, str) and len(v) > 5000:
+                trimmed[k] = v[:5000] + "... [trimmed due to size]"
+    return trimmed
+
+
 async def _scrape_and_normalize(url: str, platform: str) -> Dict[str, Any]:
     def _blocking_scrape() -> Dict[str, Any]:
         scraper = get_scraper(platform)
         import inspect
-        if "comment_limit" in inspect.signature(scraper.scrape).parameters:
-            return scraper.scrape(url, comment_limit=200)
-        return scraper.scrape(url)
+        if "comment_limit" in inspect.signature(scraper.scrape_with_retry).parameters:
+            return scraper.scrape_with_retry(url, comment_limit=200)
+        return scraper.scrape_with_retry(url)
 
     raw_data = await asyncio.get_event_loop().run_in_executor(None, _blocking_scrape)
-    normalised = DataNormalizer.normalize(platform, raw_data, url)
+    trimmed_raw_data = _trim_large_raw_data(raw_data)
+    normalised = DataNormalizer.normalize(platform, trimmed_raw_data, url)
     return normalised.model_dump(mode="json")
 
 

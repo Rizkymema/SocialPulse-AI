@@ -129,7 +129,7 @@ class FacebookScraper(BaseScraper):
                 info.pop("formats", None)
                 info.pop("thumbnails", None)
                 info["_source"] = "yt_dlp"
-                info["comments"] = self._normalize_comments(
+                info["comments"] = self.normalize_comment_list(
                     info.get("comments") or []
                 )
                 logger.info(
@@ -162,22 +162,3 @@ class FacebookScraper(BaseScraper):
             raise ScraperError(f"Meta Graph API error: {exc}") from exc
         except Exception as exc:
             raise ScraperError(f"Meta Graph API error: {exc}") from exc
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-    @staticmethod
-    def _normalize_comments(raw: list) -> List[Dict[str, Any]]:
-        return [
-            {
-                "id": c.get("id"),
-                "text": c.get("text", ""),
-                "author": c.get("author"),
-                "author_id": c.get("author_id"),
-                "timestamp": c.get("timestamp"),
-                "like_count": int(c.get("like_count") or 0),
-                "is_favorited": bool(c.get("is_favorited", False)),
-                "author_is_uploader": bool(c.get("author_is_uploader", False)),
-                "parent": c.get("parent") or "root",
-            }
-            for c in raw
-            if c.get("text")
-        ]

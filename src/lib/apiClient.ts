@@ -43,6 +43,7 @@ export interface ScrapedPost {
   thumbnail_url?: string;
   likes: number;
   comments: number;
+  scraped_comments_count?: number;
   shares: number;
   views: number;
   posted_at?: string;
@@ -237,7 +238,26 @@ export async function getPostComments(
   if (options?.parent) query.set("parent", options.parent);
   if (options?.refresh) query.set("refresh", "true");
   const q = query.toString();
-  const res = await fetch(`${BASE_URL}/api/posts/${postId}/comments${q ? `?${q}` : ""}`);
-  if (!res.ok) throw new Error(`Failed to load comments: ${res.status}`);
-  return res.json();
+  const url = `${BASE_URL}/api/posts/${postId}/comments${q ? `?${q}` : ""}`;
+
+  const attempts = 3;
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`Failed to load comments: ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      lastError = err;
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 2000 * (i + 1))); // backoff delay
+      }
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to load comments after retries");
 }

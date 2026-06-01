@@ -32,16 +32,34 @@ _YDL_OPTS: Dict[str, Any] = {
             "max_comments": ["all"],
         }
     },
-    "sleep_interval": 1,
-    "max_sleep_interval": 3,
+    "sleep_interval": 2,
+    "max_sleep_interval": 5,
     "http_headers": {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
+            "Chrome/136.0.0.0 Safari/537.36"
         ),
     },
 }
+
+# User-Agent rotation for retries
+_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/18.4 Safari/605.1.15"
+    ),
+    (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) "
+        "Gecko/20100101 Firefox/128.0"
+    ),
+]
 
 # Regex untuk ekstrak shortcode dari URL Instagram
 _SHORTCODE_RE = re.compile(
@@ -128,7 +146,7 @@ class InstagramScraper(BaseScraper):
         }
 
     # ── 1. yt-dlp ─────────────────────────────────────────────────────────────
-    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200) -> Dict[str, Any]:
+    def _scrape_via_ytdlp(self, url: str, comment_limit: int | str | None = 200, ua_index: int = 0) -> Dict[str, Any]:
         try:
             from copy import deepcopy
             opts = deepcopy(_YDL_OPTS)
@@ -137,6 +155,9 @@ class InstagramScraper(BaseScraper):
                     "max_comments": [str(comment_limit or 200)],
                 }
             }
+            # Rotate user-agent on retries
+            if ua_index < len(_USER_AGENTS):
+                opts["http_headers"]["User-Agent"] = _USER_AGENTS[ua_index]
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
@@ -144,11 +165,13 @@ class InstagramScraper(BaseScraper):
                 info.pop("formats", None)
                 info.pop("thumbnails", None)
                 info["_source"] = "yt_dlp"
-                info["comments"] = self._normalize_comments(
+                info["comments"] = self.normalize_comment_list(
                     info.get("comments") or []
                 )
                 logger.info(
-                    "Instagram yt-dlp OK: %d comments", len(info["comments"])
+                    "Instagram yt-dlp OK: %d comments (reported %s)",
+                    len(info["comments"]),
+                    info.get("comment_count", "?"),
                 )
                 return info
         except yt_dlp.utils.DownloadError as exc:
@@ -222,7 +245,7 @@ class InstagramScraper(BaseScraper):
             "thumbnail": post.url,
             "webpage_url": url,
             "is_video": post.is_video,
-            "comments": comments,
+            "comments": self.normalize_comment_list(comments),
         }
 
     # ── 3. Instagram oEmbed publik ────────────────────────────────────────────
@@ -267,20 +290,4 @@ class InstagramScraper(BaseScraper):
             raise ScraperError(f"Meta Graph API error: {exc}") from exc
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-    @staticmethod
-    def _normalize_comments(raw: list) -> List[Dict[str, Any]]:
-        return [
-            {
-                "id": c.get("id"),
-                "text": c.get("text", ""),
-                "author": c.get("author"),
-                "author_id": c.get("author_id"),
-                "timestamp": c.get("timestamp"),
-                "like_count": int(c.get("like_count") or 0),
-                "is_favorited": bool(c.get("is_favorited", False)),
-                "author_is_uploader": bool(c.get("author_is_uploader", False)),
-                "parent": c.get("parent") or "root",
-            }
-            for c in raw
-            if c.get("text")
-        ]
+    # _normalize_comments is inherited from BaseScraper.normalize_comment_list

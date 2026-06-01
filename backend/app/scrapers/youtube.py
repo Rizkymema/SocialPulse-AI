@@ -201,7 +201,13 @@ class YouTubeScraper(BaseScraper):
         except Exception as exc:
             logger.warning("Failed to fetch comments via YouTube API: %s", exc)
 
-        video_info["comments"] = comments_list
+        video_info["comments"] = self.normalize_comment_list(comments_list)
+        logger.info(
+            "YouTube API scrape: %d comments fetched (API reported %s) for %s",
+            len(video_info["comments"]),
+            video_info.get("comment_count", "?"),
+            url,
+        )
         return video_info
 
     # ── yt-dlp ────────────────────────────────────────────────────────────────
@@ -388,24 +394,11 @@ class YouTubeScraper(BaseScraper):
 
             # Normalize comments into a clean list
             raw_comments = info.get("comments") or []
-            info["comments"] = [
-                {
-                    "id": c.get("id"),
-                    "text": c.get("text", ""),
-                    "author": c.get("author"),
-                    "author_id": c.get("author_id"),
-                    "timestamp": c.get("timestamp"),
-                    "like_count": c.get("like_count", 0),
-                    "is_favorited": c.get("is_favorited", False),
-                    "author_is_uploader": c.get("author_is_uploader", False),
-                    "parent": c.get("parent", "root"),
-                }
-                for c in raw_comments
-                if c.get("text")
-            ]
+            info["comments"] = self.normalize_comment_list(raw_comments)
             logger.info(
-                "YouTube scrape complete: %d comments collected for %s",
+                "YouTube yt-dlp scrape: %d comments collected (reported %s) for %s",
                 len(info["comments"]),
+                info.get("comment_count", "?"),
                 url,
             )
             return info
