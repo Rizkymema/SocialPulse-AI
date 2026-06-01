@@ -110,6 +110,8 @@ export interface CommentsResponse {
   platform: string;
   total: number;
   comments: Comment[];
+  scraped_comments_count?: number;
+  platform_comments_count?: number;
 }
 
 export interface GetPostCommentsOptions {
@@ -234,6 +236,11 @@ export async function getPostComments(
   postId: string,
   options?: GetPostCommentsOptions
 ): Promise<CommentsResponse> {
+  const parseCountHeader = (value: string | null, fallback: number) => {
+    const parsed = Number(value ?? fallback);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
   const query = new URLSearchParams();
   if (options?.parent) query.set("parent", options.parent);
   if (options?.refresh) query.set("refresh", "true");
@@ -249,7 +256,20 @@ export async function getPostComments(
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       if (!res.ok) throw new Error(`Failed to load comments: ${res.status}`);
-      return await res.json();
+      const payload = (await res.json()) as CommentsResponse;
+      const scrapedCommentsCount = parseCountHeader(
+        res.headers.get("X-Scraped-Comments-Count"),
+        payload.comments.length
+      );
+      const platformCommentsCount = parseCountHeader(
+        res.headers.get("X-Platform-Comments-Count"),
+        payload.total
+      );
+      return {
+        ...payload,
+        scraped_comments_count: scrapedCommentsCount,
+        platform_comments_count: platformCommentsCount,
+      };
     } catch (err) {
       lastError = err;
       if (i < attempts - 1) {

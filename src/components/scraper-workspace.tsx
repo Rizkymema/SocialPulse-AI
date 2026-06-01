@@ -57,6 +57,12 @@ type ScraperWorkspaceProps = {
   themeMode?: "dark" | "light";
 };
 
+type ExportCommentLoadResult = {
+  comments: Comment[];
+  platformCommentsCount: number;
+  scrapedCommentsCount: number;
+};
+
 const normalizeExportText = (value: string | undefined) =>
   value?.replace(/\s+/g, " ").trim() ?? "";
 
@@ -460,23 +466,45 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     });
   };
 
-  const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<Comment[]> => {
+  const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<ExportCommentLoadResult> => {
     const isPersistedPost = !post.id.startsWith("ephemeral-");
     if (isPersistedPost) {
       try {
         const res = await getPostComments(post.id, { refresh: false });
+        let latestResponse = res;
         let resolved = dedupeComments(res.comments);
-        if (post.comments > 0 && resolved.length < post.comments) {
+        const platformCommentTarget = Math.max(
+          post.comments,
+          res.platform_comments_count ?? 0,
+        );
+        if (platformCommentTarget > 0 && resolved.length < platformCommentTarget) {
           const resRefresh = await getPostComments(post.id, { refresh: true });
+          latestResponse = resRefresh;
           resolved = dedupeComments(resRefresh.comments);
         }
-        return sortCommentsForExport(resolved);
+        return {
+          comments: sortCommentsForExport(resolved),
+          platformCommentsCount: Math.max(
+            post.comments,
+            latestResponse.platform_comments_count ?? 0,
+            resolved.length,
+          ),
+          scrapedCommentsCount: Math.max(
+            post.scraped_comments_count ?? 0,
+            latestResponse.scraped_comments_count ?? 0,
+            resolved.length,
+          ),
+        };
       } catch (error) {
         console.warn(`Failed to fetch fresh comments for post ${post.id}`, error);
       }
     }
     const fallback = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
-    return sortCommentsForExport(fallback);
+    return {
+      comments: sortCommentsForExport(fallback),
+      platformCommentsCount: Math.max(post.comments, fallback.length),
+      scrapedCommentsCount: Math.max(post.scraped_comments_count ?? 0, fallback.length),
+    };
   }, [extractInlineComments, sessionComments]);
 
   const buildExportDataset = useCallback(async (
@@ -490,8 +518,8 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       const post = posts[i];
       onProgress?.(i + 1, posts.length);
 
-      const loadedComments = await loadCommentsForExport(post);
-      const postComments: ExportComment[] = loadedComments
+      const loadedCommentData = await loadCommentsForExport(post);
+      const postComments: ExportComment[] = loadedCommentData.comments
         .map((comment, index) => {
           const content = normalizeExportText(comment.text);
 
@@ -528,9 +556,12 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         username: normalizeExportText(post.username ?? "unknown") || "unknown",
         content: normalizeExportText(post.content ?? ""),
         likes: post.likes,
-        comments: post.comments,
+        comments: loadedCommentData.platformCommentsCount,
         exportedComments: postComments.length,
-        scrapedCommentsCount: Math.max(post.scraped_comments_count ?? 0, postComments.length),
+        scrapedCommentsCount: Math.max(
+          loadedCommentData.scrapedCommentsCount,
+          postComments.length,
+        ),
         shares: post.shares,
         views: post.views,
         timestamp: post.posted_at ?? post.created_at,
@@ -620,7 +651,9 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       setExportProgress(`Membangun file ${format.toUpperCase()}...`);
 
       const summaryText = [
-        `Export ${dataset.posts.length} postingan dengan ${dataset.comments.length} komentar hasil scraping.`,
+        `Export ${dataset.posts.length} postingan. Total komentar yang dilaporkan platform: ${dataset.posts.reduce((sum, post) => sum + post.comments, 0)}.`,
+        `Komentar yang berhasil dikumpulkan scraper: ${dataset.posts.reduce((sum, post) => sum + post.scrapedCommentsCount, 0)}.`,
+        `Komentar yang masuk ke file export: ${dataset.comments.length}.`,
         `Komentar positif: ${dataset.comments.filter((comment) => comment.sentiment === "positive").length}.`,
         `Komentar netral: ${dataset.comments.filter((comment) => comment.sentiment === "neutral").length}.`,
         `Komentar negatif: ${dataset.comments.filter((comment) => comment.sentiment === "negative").length}.`,
