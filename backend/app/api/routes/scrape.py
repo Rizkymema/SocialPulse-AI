@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import uuid
@@ -18,10 +17,6 @@ from app.schemas.scrape import ScrapeRequest
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# In-memory duplicate cache (url_hash → post_id str)
-_url_cache: dict[str, str] = {}
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -72,7 +67,7 @@ async def _scrape_and_normalize(url: str, platform: str) -> Dict[str, Any]:
         scraper = get_scraper(platform)
         import inspect
         if "comment_limit" in inspect.signature(scraper.scrape_with_retry).parameters:
-            return scraper.scrape_with_retry(url, comment_limit=200)
+            return scraper.scrape_with_retry(url, comment_limit=500)
         return scraper.scrape_with_retry(url)
 
     raw_data = await asyncio.get_event_loop().run_in_executor(None, _blocking_scrape)
@@ -114,6 +109,21 @@ def _load_post_result(db: Any, post_id: str | None) -> dict | None:
     post_res = db.table("scraped_posts").select("*").eq("id", post_id).execute()
     if post_res.data:
         return post_res.data[0]
+    return None
+
+
+def _load_active_job_for_url(db: Any, url: str) -> dict | None:
+    jobs = (
+        db.table("scrape_jobs")
+        .select("*")
+        .eq("url", url)
+        .in_("status", ["pending", "processing"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if jobs.data:
+        return jobs.data[0]
     return None
 
 
@@ -185,8 +195,6 @@ async def _run_scrape(job_id: str, url: str, platform: str) -> None:
                 {"id": post_id, **nd, "created_at": now, "updated_at": now}
             ).execute()
 
-        _url_cache[hashlib.sha256(url.encode()).hexdigest()] = post_id
-
         db.table("scrape_jobs").update(
             {
                 "status": "completed",
@@ -225,38 +233,15 @@ async def submit_scrape(payload: ScrapeRequest):
         )
 
     platform = str(PlatformDetector.detect(url))
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
     db = get_supabase()
 
-    # Check duplicate via cache
-    cached_id = _url_cache.get(url_hash)
-    if cached_id:
-        jobs = (
-            db.table("scrape_jobs")
-            .select("*")
-            .eq("scraped_post_id", cached_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
+    # Reuse only active in-flight jobs; completed jobs should be refreshed so the data stays real-time.
+    active_job = _load_active_job_for_url(db, url)
+    if active_job:
+        return _job_response(
+            active_job,
+            _load_post_result(db, active_job.get("scraped_post_id")),
         )
-        if jobs.data:
-            return _job_response(jobs.data[0])
-
-    # Check existing post in DB
-    existing = db.table("scraped_posts").select("id").eq("url", url).execute()
-    if existing.data:
-        post_id = existing.data[0]["id"]
-        _url_cache[url_hash] = post_id
-        jobs = (
-            db.table("scrape_jobs")
-            .select("*")
-            .eq("scraped_post_id", post_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if jobs.data:
-            return _job_response(jobs.data[0], _load_post_result(db, post_id))
 
     # Create new job
     now = _now_iso()

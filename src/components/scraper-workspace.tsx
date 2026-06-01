@@ -135,6 +135,14 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
   const [deletingPostIds, setDeletingPostIds] = useState<string[]>([]);
 
+  const getRealtimeScrapeStages = useCallback(() => ([
+    "Menganalisis URL dan mendeteksi platform...",
+    "Mengambil metadata postingan terbaru dari platform...",
+    "Mengumpulkan komentar publik yang tersedia secara real-time...",
+    "Membersihkan data dan menghitung insight komentar...",
+    "Menyimpan hasil scraping terbaru ke workspace...",
+  ]), []);
+
   useEffect(() => {
     getPosts({ size: 100 })
       .then((res) => setApiPosts(res.items))
@@ -284,10 +292,17 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     if (!scrapeUrl.trim()) return;
 
     setScrapeStatus("loading");
-    setScrapeMessage("Mengirim URL ke backend...");
+    const realtimeStages = getRealtimeScrapeStages();
+    let stageIndex = 0;
+    setScrapeMessage(realtimeStages[stageIndex]);
+    const progressInterval = window.setInterval(() => {
+      stageIndex = Math.min(stageIndex + 1, realtimeStages.length - 1);
+      setScrapeMessage(realtimeStages[stageIndex]);
+    }, 2500);
 
     try {
       const job = await submitScrapeJob(scrapeUrl.trim());
+      window.clearInterval(progressInterval);
 
       if (job.status === "completed" && job.result) {
         completeScrape(job.result);
@@ -313,6 +328,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         setScrapeMessage(result.error_message ?? "Scraping gagal.");
       }
     } catch (err: unknown) {
+      window.clearInterval(progressInterval);
       setScrapeStatus("error");
       setScrapeMessage(
         err instanceof Error
@@ -321,6 +337,8 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
             : err.message
           : "Terjadi kesalahan saat scraping."
       );
+    } finally {
+      window.clearInterval(progressInterval);
     }
   };
 
@@ -512,7 +530,7 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
         likes: post.likes,
         comments: post.comments,
         exportedComments: postComments.length,
-        scrapedCommentsCount: post.scraped_comments_count ?? postComments.length,
+        scrapedCommentsCount: Math.max(post.scraped_comments_count ?? 0, postComments.length),
         shares: post.shares,
         views: post.views,
         timestamp: post.posted_at ?? post.created_at,
@@ -622,20 +640,25 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
       }
 
       const totalPlatformComments = dataset.posts.reduce((sum, p) => sum + p.comments, 0);
+      const totalScrapedComments = dataset.posts.reduce((sum, p) => sum + p.scrapedCommentsCount, 0);
       const totalExportedComments = dataset.comments.length;
       let coverageLabel = "";
-      if (totalPlatformComments > 0) {
-        const pct = ((totalExportedComments / totalPlatformComments) * 100).toFixed(1);
+      if (totalScrapedComments > 0) {
+        const pct = ((totalExportedComments / totalScrapedComments) * 100).toFixed(1);
         coverageLabel = `(${pct}% coverage)`;
       }
 
       addNotification(
-        `Berhasil mengunduh ${dataset.posts.length} postingan dengan ${totalExportedComments}/${totalPlatformComments} komentar ${coverageLabel} ke ${format.toUpperCase()}.`
+        `Berhasil mengunduh ${dataset.posts.length} postingan dengan ${totalExportedComments}/${Math.max(totalScrapedComments, totalExportedComments)} komentar hasil scrape ${coverageLabel} ke ${format.toUpperCase()}.`
       );
 
-      if (totalPlatformComments > 0 && (totalPlatformComments - totalExportedComments) / totalPlatformComments > 0.20) {
+      if (totalScrapedComments > 0 && (totalScrapedComments - totalExportedComments) / totalScrapedComments > 0.20) {
         alert(
-          `Catatan: Beberapa komentar tidak dapat diambil dari platform karena rate limit atau proteksi privasi. Coverage ekspor adalah ${( (totalExportedComments / totalPlatformComments) * 100 ).toFixed(1)}%.`
+          `Catatan: Sebagian komentar hasil scrape belum ikut masuk ke file ekspor. Coverage ekspor terhadap data yang berhasil diambil scraper adalah ${((totalExportedComments / totalScrapedComments) * 100).toFixed(1)}%.`
+        );
+      } else if (totalPlatformComments > totalScrapedComments && totalScrapedComments > 0) {
+        addNotification(
+          `Platform melaporkan ${totalPlatformComments} komentar, tetapi scraper saat ini berhasil mengambil ${totalScrapedComments} komentar publik yang tersedia.`
         );
       }
 

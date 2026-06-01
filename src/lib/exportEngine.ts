@@ -68,6 +68,7 @@ export const exportToCSV = async (
     "Post Content",
     "Post Likes",
     "Post Comments (Platform)",
+    "Post Comments (Scraped)",
     "Exported Comment Rows",
     "Post Shares",
     "Post Views",
@@ -102,6 +103,7 @@ export const exportToCSV = async (
       normalizePortableText(post.content),
       post.likes,
       post.comments,
+      post.scrapedCommentsCount,
       post.exportedComments,
       post.shares,
       post.views,
@@ -125,6 +127,7 @@ export const exportToCSV = async (
         "", // Leave Content empty to keep it tidy
         "", // Likes
         "", // Comments
+        "", // ScrapedComments
         "", // ExportedComments
         "", // Shares
         "", // Views
@@ -172,6 +175,7 @@ export const exportToExcel = async (
   const totalPosts = posts.length;
   const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
   const totalComments = posts.reduce((sum, p) => sum + p.comments, 0);
+  const totalScrapedComments = posts.reduce((sum, p) => sum + p.scrapedCommentsCount, 0);
   const totalShares = posts.reduce((sum, p) => sum + p.shares, 0);
   const totalViews = posts.reduce((sum, p) => sum + p.views, 0);
   const exportedComments = comments.length;
@@ -200,6 +204,7 @@ export const exportToExcel = async (
     ["Total Collected Posts", totalPosts],
     ["Total Likes", totalLikes],
     ["Total Comments (Platform)", totalComments],
+    ["Total Comments Collected by Scraper", totalScrapedComments],
     ["Total Exported Comment Rows", exportedComments],
     ["Total Shares", totalShares],
     ["Total Views", totalViews],
@@ -264,6 +269,7 @@ export const exportToExcel = async (
     Content: normalizePortableText(p.content),
     Likes: p.likes,
     ReportedComments: p.comments,
+    ScrapedComments: p.scrapedCommentsCount,
     ExportedComments: p.exportedComments,
     Shares: p.shares,
     Views: p.views,
@@ -300,19 +306,24 @@ export const exportToExcel = async (
 
   // --- Sheet 4: Data Integrity Summary ---
   const integrityData = [
-    ["POST ID", "PLATFORM", "USERNAME", "COMMENTS (PLATFORM)", "COMMENTS (EXPORTED)", "COVERAGE RATE", "STATUS"],
+    ["POST ID", "PLATFORM", "USERNAME", "COMMENTS (PLATFORM)", "COMMENTS (SCRAPED)", "COMMENTS (EXPORTED)", "EXPORT COVERAGE", "STATUS"],
     ...posts.map((p) => {
-      const coverage = p.comments > 0 ? (p.exportedComments / p.comments) : 1;
+      const comparableCount = Math.max(p.scrapedCommentsCount, p.exportedComments, 0);
+      const coverage = comparableCount > 0 ? (p.exportedComments / comparableCount) : 1;
       const coveragePct = `${Math.round(coverage * 100)}%`;
       let status = "Complete";
-      if (p.comments > 0 && coverage < 0.8) {
-        status = "Partial (Rate Limited)";
+      if (comparableCount > 0 && coverage < 0.8) {
+        status = "Partial";
+      }
+      if (p.comments > comparableCount) {
+        status = `${status} / Platform Total Higher`;
       }
       return [
         p.id,
         p.platform.toUpperCase(),
         p.username,
         p.comments,
+        p.scrapedCommentsCount,
         p.exportedComments,
         coveragePct,
         status

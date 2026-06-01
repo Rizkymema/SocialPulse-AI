@@ -66,7 +66,7 @@ def scrape_url_task(self, job_id: str, url: str) -> Dict[str, Any]:
         scraper = get_scraper(str(platform))
         import inspect
         if "comment_limit" in inspect.signature(scraper.scrape).parameters:
-            raw_data = scraper.scrape(url, comment_limit=200)
+            raw_data = scraper.scrape(url, comment_limit=500)
         else:
             raw_data = scraper.scrape(url)
 
