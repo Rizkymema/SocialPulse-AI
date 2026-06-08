@@ -291,7 +291,8 @@ export async function getPostComments(
   for (let i = 0; i < attempts; i++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const timeoutMs = options?.refresh ? 45000 : 20000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       if (!res.ok) throw new Error(`Failed to load comments: ${res.status}`);

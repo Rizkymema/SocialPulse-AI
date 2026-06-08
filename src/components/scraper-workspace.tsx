@@ -487,27 +487,52 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
   };
 
   const loadCommentsForExport = useCallback(async (post: ScrapedPost): Promise<ExportCommentLoadResult> => {
-    const localComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
-    const expectedStoredCommentsCount = Math.max(
-      getScrapedCommentCountForPost(post),
-      localComments.length,
-    );
-
     const isPersistedPost = !post.id.startsWith("ephemeral-");
+
+    // Start with whatever we have locally (session state or inline raw_data)
+    let localComments = dedupeComments(sessionComments[post.id] ?? extractInlineComments(post));
+
+    // For persisted posts, always re-fetch fresh data from backend to avoid stale raw_data
     if (isPersistedPost) {
+      // Step 1: Try the comments endpoint (reads merged raw_data.comments from DB)
+      let apiComments: Comment[] = [];
+      let apiResponse: { scraped_comments_count?: number; platform_comments_count?: number } = {};
+      let apiSuccess = false;
+
       try {
         const res = await getPostComments(post.id, { refresh: false });
-        let latestResponse = res;
-        let resolved = mergeCommentSources(res.comments, localComments);
+        apiComments = res.comments;
+        apiResponse = res;
+        apiSuccess = true;
+      } catch (error) {
+        console.warn(`[export] Initial comments fetch failed for post ${post.id}:`, error);
+      }
+
+      if (apiSuccess) {
+        let resolved = mergeCommentSources(apiComments, localComments);
+        let latestResponse = apiResponse;
+
+        // If we have fewer comments than the platform reports, try a refresh
         const platformCommentTarget = Math.max(
           post.comments,
-          res.platform_comments_count ?? 0,
+          apiResponse.platform_comments_count ?? 0,
         );
         if (platformCommentTarget > 0 && resolved.length < platformCommentTarget) {
-          const resRefresh = await getPostComments(post.id, { refresh: true });
-          latestResponse = resRefresh;
-          resolved = mergeCommentSources(resRefresh.comments, localComments, resolved);
+          try {
+            const resRefresh = await getPostComments(post.id, { refresh: true });
+            latestResponse = resRefresh;
+            resolved = mergeCommentSources(resRefresh.comments, localComments, resolved);
+          } catch (refreshError) {
+            console.warn(`[export] Refresh fetch failed for post ${post.id}:`, refreshError);
+            // Continue with what we have from the initial fetch
+          }
         }
+
+        const expectedStoredCommentsCount = Math.max(
+          getScrapedCommentCountForPost(post),
+          localComments.length,
+        );
+
         return {
           comments: sortCommentsForExport(resolved),
           platformCommentsCount: Math.max(
@@ -522,22 +547,39 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
             resolved.length,
           ),
         };
-      } catch (error) {
-        console.warn(`Failed to fetch fresh comments for post ${post.id}`, error);
+      }
+
+      // Step 2: If comments endpoint failed entirely, try re-fetching the full post
+      // to get the latest raw_data.comments from DB (avoids using stale data from initial page load)
+      try {
+        const freshPostRes = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/posts/${post.id}`
+        );
+        if (freshPostRes.ok) {
+          const freshPost = await freshPostRes.json() as ScrapedPost;
+          const freshInlineComments = extractInlineComments(freshPost);
+          if (freshInlineComments.length > localComments.length) {
+            localComments = dedupeComments([...freshInlineComments, ...localComments]);
+            console.info(
+              `[export] Re-fetched post ${post.id}: recovered ${localComments.length} comments from fresh raw_data`
+            );
+          }
+        }
+      } catch (postFetchError) {
+        console.warn(`[export] Failed to re-fetch post ${post.id}:`, postFetchError);
       }
     }
 
-    if (isPersistedPost && localComments.length < expectedStoredCommentsCount) {
-      throw new Error(
-        `Komentar tersimpan untuk post @${post.username ?? "unknown"} belum bisa dimuat lengkap dari backend. Jalankan migration database lalu coba export lagi.`
-      );
-    }
+    // Fallback: use whatever local comments we have
+    const expectedStoredCommentsCount = Math.max(
+      getScrapedCommentCountForPost(post),
+      localComments.length,
+    );
 
-    const fallback = localComments;
     return {
-      comments: sortCommentsForExport(fallback),
-      platformCommentsCount: Math.max(post.comments, fallback.length),
-      scrapedCommentsCount: Math.max(expectedStoredCommentsCount, fallback.length),
+      comments: sortCommentsForExport(localComments),
+      platformCommentsCount: Math.max(post.comments, localComments.length),
+      scrapedCommentsCount: Math.max(expectedStoredCommentsCount, localComments.length),
     };
   }, [extractInlineComments, sessionComments]);
 
@@ -668,17 +710,70 @@ export function ScraperWorkspace({ mode = "app", themeMode = "dark" }: ScraperWo
     }
   }, [addNotification, removePostsFromState]);
 
-  const runExport = async (format: "csv" | "excel" | "pdf") => {
-    const targetPosts = selectedPosts.length > 0 ? selectedPosts : sortedPosts;
-
-    if (targetPosts.length === 0) {
-      alert("Belum ada data scraping untuk diunduh.");
-      return;
+  const fetchAllFilteredPosts = useCallback(async (): Promise<ScrapedPost[]> => {
+    const allPosts: ScrapedPost[] = [];
+    let page = 1;
+    const pageSize = 100;
+    while (true) {
+      const res = await getPosts({
+        platform: platformFilter === "all" ? undefined : platformFilter,
+        page,
+        size: pageSize,
+      });
+      allPosts.push(...res.items);
+      if (res.items.length < pageSize || allPosts.length >= res.total) {
+        break;
+      }
+      page += 1;
     }
 
+    // Filter locally by search query if active
+    const normalizedSearch = search.toLowerCase();
+    let filtered = allPosts;
+    if (normalizedSearch) {
+      filtered = allPosts.filter((post) =>
+        (post.username ?? "").toLowerCase().includes(normalizedSearch) ||
+        (post.content ?? "").toLowerCase().includes(normalizedSearch)
+      );
+    }
+
+    // Sort locally using the active sortBy
+    const sorted = [...filtered].sort((a, b) => {
+      const aTimestamp = new Date(a.posted_at ?? a.created_at).getTime();
+      const bTimestamp = new Date(b.posted_at ?? b.created_at).getTime();
+      const aEngagement = a.likes + a.comments + a.shares;
+      const bEngagement = b.likes + b.comments + b.shares;
+
+      if (sortBy === "date-desc") return bTimestamp - aTimestamp;
+      if (sortBy === "date-asc") return aTimestamp - bTimestamp;
+      if (sortBy === "engagement-desc") return bEngagement - aEngagement;
+      if (sortBy === "comments-desc") return b.comments - a.comments;
+      return b.likes - a.likes;
+    });
+
+    return sorted;
+  }, [platformFilter, search, sortBy]);
+
+  const runExport = async (format: "csv" | "excel" | "pdf") => {
+    let targetPosts = selectedPosts;
+
     setExportingFormat(format);
-    setExportProgress(`Mulai mempersiapkan ekspor ${format.toUpperCase()}...`);
+    setExportProgress("Menghubungkan ke database...");
+
     try {
+      if (targetPosts.length === 0) {
+        setExportProgress("Mengambil seluruh data postingan dari database...");
+        targetPosts = await fetchAllFilteredPosts();
+      }
+
+      if (targetPosts.length === 0) {
+        alert("Belum ada data scraping untuk diunduh.");
+        setExportingFormat(null);
+        setExportProgress("");
+        return;
+      }
+
+      setExportProgress(`Mulai mempersiapkan ekspor ${format.toUpperCase()}...`);
       const dataset = await buildExportDataset(targetPosts, (current, total) => {
         setExportProgress(`Mengambil komentar untuk postingan ${current} dari ${total}...`);
       });

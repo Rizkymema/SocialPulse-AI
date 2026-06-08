@@ -21,8 +21,17 @@ async def export_csv(platform: Optional[str] = Query(None)):
     query = db.table("scraped_posts").select("*")
     if platform:
         query = query.eq("platform", platform.lower())
-    result = query.order("created_at", desc=True).execute()
-    posts = result.data or []
+
+    posts = []
+    chunk_size = 1000
+    offset = 0
+    while True:
+        result = query.order("created_at", desc=True).range(offset, offset + chunk_size - 1).execute()
+        data = result.data or []
+        posts.extend(data)
+        if len(data) < chunk_size:
+            break
+        offset += chunk_size
 
     csv_data = posts_to_csv(posts)
     return StreamingResponse(
@@ -42,8 +51,17 @@ async def export_json(platform: Optional[str] = Query(None)):
     query = db.table("scraped_posts").select("*")
     if platform:
         query = query.eq("platform", platform.lower())
-    result = query.order("created_at", desc=True).execute()
-    posts = result.data or []
+
+    posts = []
+    chunk_size = 1000
+    offset = 0
+    while True:
+        result = query.order("created_at", desc=True).range(offset, offset + chunk_size - 1).execute()
+        data = result.data or []
+        posts.extend(data)
+        if len(data) < chunk_size:
+            break
+        offset += chunk_size
 
     json_data = posts_to_json(posts)
     return StreamingResponse(
@@ -51,3 +69,4 @@ async def export_json(platform: Optional[str] = Query(None)):
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=scraped_posts.json"},
     )
+
